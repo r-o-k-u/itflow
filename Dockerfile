@@ -18,7 +18,7 @@ ENV ITFLOW_REPO_BRANCH master
 # apache2 log levels: emerg, alert, crit, error, warn, notice, info, debug
 ENV ITFLOW_LOG_LEVEL warn
 
-ENV ITFLOW_DB_HOST itflow-db
+ENV ITFLOW_DB_HOST null
 
 ENV ITFLOW_DB_PASS null
 
