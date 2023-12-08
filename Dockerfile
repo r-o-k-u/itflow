@@ -10,7 +10,7 @@ ENV ITFLOW_NAME ITFlow
 ENV ITFLOW_URL localhost
 #it.qwerty.co.ke
 
-ENV ITFLOW_PORT 9090
+ENV ITFLOW_PORT 8080
 
 ENV ITFLOW_REPO https://github.com/r-o-k-u/itflow
 
