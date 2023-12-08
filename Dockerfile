@@ -3,13 +3,14 @@ FROM ubuntu:22.04
 LABEL dockerfile.version="v1.3" dockerfile.release-date="2023-02-04"
 
 # Set up ENVs that will be utilized in compose file.
-ENV TZ GMT+3
+ENV TZ Africa/Nairobi
 
 ENV ITFLOW_NAME ITFlow
 
-ENV ITFLOW_URL it.qwerty.co.ke
+ENV ITFLOW_URL localhost
+#it.qwerty.co.ke
 
-ENV ITFLOW_PORT 8080
+ENV ITFLOW_PORT 9090
 
 ENV ITFLOW_REPO https://github.com/r-o-k-u/itflow
 

@@ -27,7 +27,7 @@ services:
       - wan
       - itflow-db
     ports:
-      - "9090:8080"
+      - "9090:9090"
     environment:
       - TZ=$TZ
       - ITFLOW_NAME=ITFlow
