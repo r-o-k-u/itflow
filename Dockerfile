@@ -12,7 +12,7 @@ ENV ITFLOW_URL localhost
 
 ENV ITFLOW_PORT 8080
 
-ENV ITFLOW_REPO https://github.com/r-o-k-u/itflow
+ENV ITFLOW_REPO github.com/r-o-k-u/itflow
 
 ENV ITFLOW_REPO_BRANCH master
 
