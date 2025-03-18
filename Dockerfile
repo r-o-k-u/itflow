@@ -1,79 +1,64 @@
 FROM ubuntu:22.04
 
-LABEL dockerfile.version="v1.3" dockerfile.release-date="2023-02-04"
+LABEL dockerfile.version="v2.0" dockerfile.release-date="2024-01-01"
 
-# Set up ENVs that will be utilized in compose file.
-ENV TZ Africa/Nairobi
+# Environment variables
+ENV TZ=Africa/Nairobi \
+    ITFLOW_NAME=ITFlow \
+    ITFLOW_URL=localhost \
+    ITFLOW_PORT=8080 \
+    ITFLOW_REPO=github.com/r-o-k-u/itflow \
+    ITFLOW_REPO_BRANCH=master \
+    ITFLOW_LOG_LEVEL=warn \
+    ITFLOW_DB_HOST=null \
+    ITFLOW_DB_PASS=null
 
-ENV ITFLOW_NAME ITFlow
-
-ENV ITFLOW_URL localhost
-#it.qwerty.co.ke
-
-ENV ITFLOW_PORT 8080
-
-ENV ITFLOW_REPO github.com/r-o-k-u/itflow
-
-ENV ITFLOW_REPO_BRANCH master
-
-# apache2 log levels: emerg, alert, crit, error, warn, notice, info, debug
-ENV ITFLOW_LOG_LEVEL warn
-
-ENV ITFLOW_DB_HOST null
-
-ENV ITFLOW_DB_PASS null
-
-# Set timezone from TZ ENV
+# Set timezone
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# PREREQS: php php-intl php-mysqli php-imap php-curl libapache2-mod-php mariadb-server git -y
-# Upgrade, then install prereqs.
-RUN apt-get update && apt-get upgrade -y && apt-get clean
+# Install dependencies
+RUN apt-get update && \
+    apt-get upgrade -y && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository ppa:ondrej/php -y && \
+    apt-get update && \
+    apt-get install -y \
+        git \
+        apache2 \
+        php8.0 \
+        php8.0-intl \
+        php8.0-mysqli \
+        php8.0-curl \
+        php8.0-imap \
+        php8.0-mailparse \
+        libapache2-mod-php8.0 \
+        libapache2-mod-md \
+        vim \
+        cron \
+        dnsutils \
+        iputils-ping \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# ITFlow Requirements
-RUN apt-get install -y \
-    git\
-    apache2\
-    php
+# Configure Apache
+RUN a2enmod php8.0 md rewrite ssl && \
+    sed -i "s/Listen 80/Listen ${ITFLOW_PORT}/g" /etc/apache2/ports.conf && \
+    sed -i "s/:80/:${ITFLOW_PORT}/g" /etc/apache2/sites-available/*.conf
 
-# Ubuntu quality of life installs
-RUN apt-get install -y \
-    vim\
-    cron\
-    dnsutils\
-    iputils-ping
+# PHP configuration
+RUN echo "memory_limit = 512M" >> /etc/php/8.0/apache2/conf.d/00-custom.ini && \
+    echo "upload_max_filesize = 40M" >> /etc/php/8.0/apache2/conf.d/00-custom.ini && \
+    echo "post_max_size = 40M" >> /etc/php/8.0/apache2/conf.d/00-custom.ini
 
-# Install & enable php extensions
-RUN apt-get install -y \
-    php-intl\
-    php-mysqli\
-    php-curl\
-    php-imap\
-    php-mailparse
-
-RUN apt-get install -y \
-    libapache2-mod-php\
-    libapache2-mod-md
-
-# Enable md apache mod
-RUN a2enmod md
-
-# Set the work dir to the git repo.
 WORKDIR /var/www/html
 
-# Entrypoint
-# On every run of the docker file, perform an entrypoint that verifies the container is good to go.
 COPY entrypoint.sh /usr/bin/
-
 RUN chmod +x /usr/bin/entrypoint.sh
 
-# forward request and error logs to docker log collector
-RUN ln -sf /dev/stdout /var/log/apache2/access.log && ln -sf /dev/stderr /var/log/apache2/error.log
+# Log configuration
+RUN ln -sf /dev/stdout /var/log/apache2/access.log && \
+    ln -sf /dev/stderr /var/log/apache2/error.log
 
-ENTRYPOINT [ "entrypoint.sh" ]
-
-# Expose the apache port
 EXPOSE $ITFLOW_PORT
-
-# Start the httpd service and have logs appear in stdout
-CMD [ "apache2ctl", "-D", "FOREGROUND" ]
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["apache2ctl", "-D", "FOREGROUND"]
