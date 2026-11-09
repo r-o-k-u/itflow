@@ -1,0 +1,60 @@
+<?php
+
+require_once '../../../includes/modal_header.php';
+
+enforceUserPermission('module_support', 2);
+
+$ticket_reply_id = intval($_GET['id']);
+
+$sql = mysqli_query($mysqli, "SELECT ticket_client_id, ticket_reply FROM ticket_replies
+    LEFT JOIN tickets ON ticket_id = ticket_reply_ticket_id
+    WHERE ticket_reply_id = $ticket_reply_id
+    LIMIT 1"
+);
+
+$row = mysqli_fetch_assoc($sql);
+if (!$row) {
+    echo json_encode(['error' => 'That reply no longer exists.']);
+    exit;
+}
+$ticket_reply = escapeHtml($row['ticket_reply']);
+$client_id = intval($row['ticket_client_id']);
+
+if ($client_id) {
+    enforceClientAccess();
+}
+
+ob_start();
+
+?>
+
+<div class="modal-header bg-dark">
+    <h5 class="modal-title"><i class="fa fa-fw fa-user-secret me-2"></i>Redact reply</h5>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+</div>
+<form action="post.php" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+    <input type="hidden" name="ticket_reply_id" value="<?= $ticket_reply_id ?>">
+
+    <div class="modal-body">
+
+        <!-- The editor blocks typing and only has a REDACT button - nothing on screen said so -->
+        <p class="small text-muted mb-2">
+            Select the text to hide, such as a password, then press <strong>REDACT</strong>. Typing is switched off here.
+            Saving replaces the original text for good.
+        </p>
+
+        <div class="mb-3">
+            <textarea class="form-control tinymceRedact" name="ticket_reply"><?= $ticket_reply ?></textarea>
+        </div>
+
+    </div>
+    <div class="modal-footer">
+        <button type="submit" name="redact_ticket_reply" class="btn btn-primary text-bold"><i class="fa fa-check me-2"></i>Save redaction</button>
+        <button type="button" class="btn btn-light" data-bs-dismiss="modal"><i class="fa fa-times me-2"></i>Cancel</button>
+    </div>
+</form>
+
+<?php
+
+require_once '../../../includes/modal_footer.php';

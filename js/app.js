@@ -1,428 +1,1403 @@
-$(document).ready(function() {
-  //Prevents resubmit on forms
-  if(window.history.replaceState){
-    window.history.replaceState(null, null, window.location.href);
-  }
-
-  // Slide alert up after 4 secs
-  $("#alert").fadeTo(5000, 500).slideUp(500, function(){
-    $("#alert").slideUp(500);
-  });
-
-  // Initialize Select2 Elements
-  $('.select2').select2({
-    theme: 'bootstrap4',
-  });
-
-  // Initialize TinyMCE
-  tinymce.init({
-      selector: '.tinymce',
-      browser_spellcheck: true,
-      contextmenu: false,
-      resize: true,
-      min_height: 300,
-      max_height: 600,
-      promotion: false,
-      branding: false,
-      menubar: false,
-      statusbar: false,
-      toolbar: [
-        { name: 'styles', items: [ 'styles' ] },
-        { name: 'formatting', items: [ 'bold', 'italic', 'forecolor' ] },
-        { name: 'link', items: [ 'link'] },
-        { name: 'lists', items: [ 'bullist', 'numlist' ] },
-        { name: 'alignment', items: [ 'alignleft', 'aligncenter', 'alignright', 'alignjustify' ] },
-        { name: 'indentation', items: [ 'outdent', 'indent' ] },
-        { name: 'table', items: [ 'table' ] },
-        { name: 'extra', items: [ 'code', 'fullscreen' ] }
-      ],
-      mobile: {
-          menubar: false,
-          plugins: 'autosave lists autolink',
-          toolbar: 'bold italic styles'
-      },
-      convert_urls: false,
-      plugins: 'link image lists table code codesample fullscreen autoresize',
-      license_key: 'gpl'
-  });
-
-  // Initialize TinyMCE
-  tinymce.init({
-      selector: '.tinymceAI',
-      browser_spellcheck: true,
-      contextmenu: false,
-      resize: true,
-      min_height: 300,
-      max_height: 600,
-      promotion: false,
-      branding: false,
-      menubar: false,
-      statusbar: false,
-      toolbar: [
-        { name: 'styles', items: [ 'styles' ] },
-        { name: 'formatting', items: [ 'bold', 'italic', 'forecolor' ] },
-        { name: 'link', items: [ 'link'] },
-        { name: 'lists', items: [ 'bullist', 'numlist' ] },
-        { name: 'alignment', items: [ 'alignleft', 'aligncenter', 'alignright', 'alignjustify' ] },
-        { name: 'indentation', items: [ 'outdent', 'indent' ] },
-        { name: 'table', items: [ 'table' ] },
-        { name: 'extra', items: [ 'code', 'fullscreen' ] },
-        { name: 'ai', items: [ 'reword', 'undo', 'redo' ] }
-      ],
-      mobile: {
-          menubar: false,
-          plugins: 'autosave lists autolink',
-          toolbar: 'bold italic styles'
-      },
-      convert_urls: false,
-      plugins: 'link image lists table code codesample fullscreen autoresize',
-      license_key: 'gpl',
-      setup: function(editor) {
-          var rewordButtonApi;
-
-          editor.ui.registry.addButton('reword', {
-              icon: 'ai',
-              tooltip: 'Reword Text',
-              onAction: function() {
-                  var content = editor.getContent();
-
-                  // Disable the Reword button
-                  rewordButtonApi.setEnabled(false);
-
-                  // Show the progress indicator
-                  editor.setProgressState(true);
-
-                  fetch('post.php?ai_reword', {
-                      method: 'POST',
-                      headers: {
-                          'Content-Type': 'application/json',
-                      },
-                      body: JSON.stringify({ text: content }),
-                  })
-                  .then(response => {
-                      if (!response.ok) {
-                          throw new Error('Network response was not ok');
-                      }
-                      return response.json();
-                  })
-                  .then(data => {
-                      editor.undoManager.transact(function() {
-                          editor.setContent(data.rewordedText || 'Error: Could not reword the text.');
-                      });
-
-                      // Hide the progress indicator
-                      editor.setProgressState(false);
-
-                      // Re-enable the Reword button
-                      rewordButtonApi.setEnabled(true);
-
-                      // Optional: Show a success notification
-                      editor.notificationManager.open({
-                          text: 'Text reworded successfully!',
-                          type: 'success',
-                          timeout: 3000
-                      });
-                  })
-                  .catch(error => {
-                      console.error('Error:', error);
-
-                      // Hide the progress indicator
-                      editor.setProgressState(false);
-
-                      // Re-enable the Reword button
-                      rewordButtonApi.setEnabled(true);
-
-                      // Show an error notification
-                      editor.notificationManager.open({
-                          text: 'An error occurred while rewording the text.',
-                          type: 'error',
-                          timeout: 5000
-                      });
-                  });
-              },
-              onSetup: function(buttonApi) {
-                  rewordButtonApi = buttonApi;
-                  return function() {
-                      // Cleanup when the editor is destroyed (if necessary)
-                  };
-              }
-          });
-      }
-  });
-
-  tinymce.init({
-    selector: '.tinymceTicket', // Your selector
-    browser_spellcheck: true,
-    contextmenu: false,
-    resize: true,
-    min_height: 300,
-    max_height: 600,
-    promotion: false,
-    branding: false,
-    menubar: false,
-    statusbar: false,
-    toolbar: [
-      { name: 'styles', items: [ 'styles' ] },
-      { name: 'formatting', items: [ 'bold', 'italic', 'forecolor'] },
-      { name: 'link', items: [ 'link'] },
-      { name: 'lists', items: [ 'bullist', 'numlist' ] },
-      { name: 'indentation', items: [ 'outdent', 'indent' ] },
-      { name: 'custom', items: ['redactButton'] } // Add custom button to toolbar
-    ],
-    mobile: {
-      menubar: false,
-      plugins: 'autosave lists autolink',
-      toolbar: 'bold italic styles'
-    },
-    convert_urls: false,
-    plugins: 'link image lists table code fullscreen autoresize',
-    license_key: 'gpl',
-    setup: function(editor) {
-      // Add custom toolbar button with Font Awesome icon
-      editor.ui.registry.addButton('redactButton', {
-        icon: 'permanent-pen',
-        tooltip: 'Redact', // Tooltip text for the button
-        onAction: function() {
-          var selectedText = editor.selection.getContent({ format: 'text' });
-
-          if (selectedText) {
-            // Replace the selected text with [REDACTED] in bold red
-            var newContent = '<span style="font-weight: bold; color: red;">[REDACTED]</span>';
-            
-            // Replace selected content with the new content
-            editor.selection.setContent(newContent);
-          } else {
-            alert('Please select a word to redact');
-          }
-        }
-      });
+/**
+ * Delegated listener that binds exactly once.
+ *
+ * modal_footer.php re-loads this file every time an ajax modal opens, which is
+ * why the jQuery originals used a namespaced .off().on() - without it the
+ * handlers stacked up and fired once per modal ever opened. The named flag on
+ * window is the vanilla equivalent. `this` is the matched element, matching
+ * jQuery's delegation contract so the handler bodies are unchanged.
+ */
+/**
+ * Run one initialiser in isolation.
+ *
+ * itflowInit() sets up eight independent libraries in sequence. Without this,
+ * a throw in any one of them aborts the whole function and every initialiser
+ * after it silently never runs - which is exactly the kind of failure that
+ * looks like "everything is broken" while the console shows one error from a
+ * library you were not looking at.
+ */
+function itflowStep(name, fn) {
+    try {
+        fn();
+    } catch (e) {
+        console.error('itflow init [' + name + '] failed:', e);
     }
-  });
+}
 
-  // Initialize TinyMCE AI
-  tinymce.init({
-    selector: '.tinymceTicketAI',
-    browser_spellcheck: true,
-    contextmenu: false,
-    resize: true,
-    min_height: 300,
-    max_height: 600,
-    promotion: false,
-    branding: false,
-    menubar: false,
-    statusbar: false,
-    toolbar: [
-      { name: 'styles', items: ['styles'] },
-      { name: 'formatting', items: ['bold', 'italic', 'forecolor'] },
-      { name: 'link', items: ['link'] },
-      { name: 'lists', items: ['bullist', 'numlist'] },
-      { name: 'indentation', items: ['outdent', 'indent'] },
-      { name: 'ai', items: ['reword', 'undo', 'redo'] },
-      { name: 'custom', items: ['redactButton'] } // Add custom redact button to toolbar
-    ],
-    mobile: {
-      menubar: false,
-      toolbar: 'bold italic styles'
-    },
-    convert_urls: false,
-    plugins: 'link image lists table code codesample fullscreen autoresize',
-    license_key: 'gpl',
-    setup: function(editor) {
-      var rewordButtonApi;
-
-      // Define the Reword button (AI-related button)
-      editor.ui.registry.addButton('reword', {
-        icon: 'ai', // Example icon for AI rewording
-        tooltip: 'Reword Text',
-        onAction: function() {
-          var content = editor.getContent();
-
-          // Disable the Reword button
-          rewordButtonApi.setEnabled(false);
-
-          // Show the progress indicator
-          editor.setProgressState(true);
-
-          fetch('post.php?ai_reword', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ text: content }),
-          })
-          .then(response => {
-            if (!response.ok) {
-              throw new Error('Network response was not ok');
-            }
-            return response.json();
-          })
-          .then(data => {
-            editor.undoManager.transact(function() {
-              editor.setContent(data.rewordedText || 'Error: Could not reword the text.');
-            });
-
-            // Hide the progress indicator
-            editor.setProgressState(false);
-
-            // Re-enable the Reword button
-            rewordButtonApi.setEnabled(true);
-
-            // Optional: Show a success notification
-            editor.notificationManager.open({
-              text: 'Text reworded successfully!',
-              type: 'success',
-              timeout: 3000
-            });
-          })
-          .catch(error => {
-            console.error('Error:', error);
-
-            // Hide the progress indicator
-            editor.setProgressState(false);
-
-            // Re-enable the Reword button
-            rewordButtonApi.setEnabled(true);
-
-            // Show an error notification
-            editor.notificationManager.open({
-              text: 'An error occurred while rewording the text.',
-              type: 'error',
-              timeout: 5000
-            });
-          });
+/**
+ * Typing / in a reply box offers the canned responses of the picker above it
+ * (agent/includes/inc_canned_response_picker.php) - its textarea names the
+ * picker in data-canned-picker. The list narrows as you type after the /;
+ * picking one takes the / and what was typed out again and puts the response
+ * in, as the picker does (agent/js/canned_response_picker.js). Called from the
+ * reply editors' setup, so it is there before the editor is drawn.
+ */
+function itflowCannedAutocompleter(editor) {
+    var element = editor.getElement ? editor.getElement() : null;
+    var pickerId = element && element.dataset ? element.dataset.cannedPicker : '';
+    if (!pickerId) {
+        return;
+    }
+    editor.ui.registry.addAutocompleter('itflowCanned', {
+        trigger: '/',
+        minChars: 0,
+        columns: 1,
+        highlightOn: ['canned_name'],
+        fetch: function (pattern) {
+            var picker = document.getElementById(pickerId);
+            var words = String(pattern || '').toLowerCase().split(/\s+/).filter(Boolean);
+            var items = picker ? Array.prototype.slice.call(picker.querySelectorAll('[data-canned-id]')) : [];
+            var seen = {};
+            return Promise.resolve(items.filter(function (item) {
+                if (seen[item.dataset.cannedId]) {
+                    return false;
+                }
+                seen[item.dataset.cannedId] = true;
+                return words.every(function (word) {
+                    return item.dataset.cannedSearchText.indexOf(word) !== -1;
+                });
+            }).slice(0, 8).map(function (item) {
+                return {
+                    type: 'cardmenuitem',
+                    value: item.dataset.cannedId,
+                    label: item.dataset.cannedName,
+                    items: [{
+                        type: 'cardcontainer',
+                        direction: 'vertical',
+                        items: [
+                            { type: 'cardtext', text: item.dataset.cannedName, name: 'canned_name', classes: ['itflow-canned-ac-name'] },
+                            { type: 'cardtext', text: (item.dataset.cannedPreview || '').slice(0, 90), classes: ['itflow-canned-ac-preview'] }
+                        ]
+                    }]
+                };
+            }));
         },
-        onSetup: function(buttonApi) {
-          rewordButtonApi = buttonApi;
-          return function() {
-            // Cleanup when the editor is destroyed (if necessary)
-          };
+        onAction: function (api, range, value) {
+            api.hide();
+            editor.selection.setRng(range);
+            editor.insertContent('');
+            if (window.itflowCannedPick) {
+                window.itflowCannedPick(pickerId, value);
+            }
         }
-      });
+    });
+}
 
-      // Add the Redact button
-      editor.ui.registry.addButton('redactButton', {
-        icon: 'permanent-pen',
-        tooltip: 'Redact Text', // Tooltip text for the button
-        onAction: function() {
-          var selectedText = editor.selection.getContent({ format: 'text' });
-
-          if (selectedText) {
-            // Replace the selected text with [REDACTED] in bold red
-            var newContent = '<span style="font-weight: bold; color: red;">[REDACTED]</span>';
-            
-            // Replace selected content with the new content
-            editor.selection.setContent(newContent);
-          } else {
-            alert('Please select a word to redact');
-          }
-        }
-      });
+/**
+ * @ in an internal note offers the agents who can open the ticket - its
+ * textarea carries them in data-mention-agents (ticketMentionAgentsAttr(),
+ * functions/ticket_mention.php). The list narrows as you type a name or role
+ * after the @; picking one puts in a mention the editor treats as one piece,
+ * and saving the note tells them. Only while the note is internal - the form's
+ * reply type says which - and a public reply holding mentions says they are
+ * plain text there. Called from the reply editors' setup.
+ */
+function itflowMentionAutocompleter(editor) {
+    var element = editor.getElement ? editor.getElement() : null;
+    var raw = element && element.dataset ? element.dataset.mentionAgents : '';
+    if (!raw) {
+        return;
     }
-  });
-
-  tinymce.init({
-    selector: '.tinymceRedact', // Your selector
-    browser_spellcheck: true,
-    contextmenu: false,
-    resize: true,
-    min_height: 300,
-    max_height: 600,
-    promotion: false,
-    branding: false,
-    menubar: false,
-    statusbar: false,
-    toolbar: 'redactButton', // Only the redact button in the toolbar
-    mobile: {
-      menubar: false,
-      plugins: 'autosave lists autolink',
-      toolbar: 'redactButton' // Only the redact button on mobile
-    },
-    convert_urls: false,
-    plugins: 'link image lists table code fullscreen autoresize',
-    license_key: 'gpl',
-    setup: function(editor) {
-      // Disable all text input and backspace/delete actions
-      editor.on('keydown', function(e) {
-        // Prevent all key events (including backspace and delete)
-        e.preventDefault();
-      });
-
-      // Add custom toolbar button with Font Awesome icon and label
-      editor.ui.registry.addButton('redactButton', {
-        icon: 'permanent-pen',
-        tooltip: 'Redact', // Tooltip text for the button
-        text: 'REDACT', // Add the text next to the icon
-        onAction: function() {
-          var selectedText = editor.selection.getContent({ format: 'text' });
-
-          if (selectedText) {
-            // Replace the selected text with [REDACTED] in bold red
-            var newContent = '<span style="font-weight: bold; color: red;">[REDACTED]</span>';
-            
-            // Replace selected content with the new content
-            editor.selection.setContent(newContent);
-          } else {
-            alert('Please select a word to redact');
-          }
-        }
-      });
+    var agents = [];
+    try {
+        agents = JSON.parse(raw) || [];
+    } catch (e) {
+        return;
     }
-  });
+    var form = element.form || element.closest('form');
 
+    // Internal: the composer's Internal note, or the edit window's Internal - or no choice on the form at all
+    function internal() {
+        var picked = form ? form.querySelector('input[name="public_reply_type"]:checked, input[name="ticket_reply_type"]:checked') : null;
+        return !picked || picked.value === '0' || picked.value === 'Internal';
+    }
 
+    // The hint while it is internal; the warning when a public one holds mentions
+    function showState() {
+        if (!form) {
+            return;
+        }
+        var body = editor.getBody ? editor.getBody() : null;
+        var has = !!(body && body.querySelector('.itflow-mention'));
+        var hint = form.querySelector('[data-mention-hint]');
+        var warn = form.querySelector('[data-mention-public]');
+        if (hint) {
+            hint.hidden = !internal();
+        }
+        if (warn) {
+            warn.hidden = internal() || !has;
+        }
+    }
 
-  // DateTime
-  $('.datetimepicker').datetimepicker({
-  });
+    editor.ui.registry.addAutocompleter('itflowMention', {
+        trigger: '@',
+        minChars: 0,
+        columns: 1,
+        highlightOn: ['mention_name'],
+        fetch: function (pattern) {
+            if (!internal()) {
+                return Promise.resolve([]);
+            }
+            var words = String(pattern || '').toLowerCase().split(/\s+/).filter(Boolean);
+            return Promise.resolve(agents.filter(function (agent) {
+                var text = (agent.name + ' ' + (agent.role || '')).toLowerCase();
+                return words.every(function (word) {
+                    return text.indexOf(word) !== -1;
+                });
+            }).slice(0, 8).map(function (agent) {
+                return {
+                    type: 'cardmenuitem',
+                    value: String(agent.id),
+                    label: agent.name,
+                    items: [{
+                        type: 'cardcontainer',
+                        direction: 'horizontal',
+                        align: 'left',
+                        valign: 'middle',
+                        items: [
+                            agent.avatar
+                                ? { type: 'cardimage', src: agent.avatar, alt: '', classes: ['itflow-mention-ac-avatar'] }
+                                : { type: 'cardtext', text: agent.initials || '?', classes: ['itflow-mention-ac-initials'] },
+                            {
+                                type: 'cardcontainer',
+                                direction: 'vertical',
+                                items: [
+                                    { type: 'cardtext', text: agent.name, name: 'mention_name', classes: ['itflow-mention-ac-name'] },
+                                    { type: 'cardtext', text: agent.role || '', classes: ['itflow-mention-ac-role'] }
+                                ]
+                            }
+                        ]
+                    }]
+                };
+            }));
+        },
+        onAction: function (api, range, value) {
+            api.hide();
+            var agent = agents.filter(function (a) {
+                return String(a.id) === String(value);
+            })[0];
+            if (!agent) {
+                return;
+            }
+            editor.selection.setRng(range);
+            editor.insertContent('<span class="itflow-mention itflow-mention-u' + parseInt(agent.id, 10) + '" data-mention="' + parseInt(agent.id, 10)
+                + '" contenteditable="false">@' + editor.dom.encode(agent.name) + '</span>&nbsp;');
+            showState();
+        }
+    });
 
-  // Data Input Mask
-  $('[data-mask]').inputmask();
+    editor.on('init SetContent NodeChange input', showState);
+    if (form && !form.dataset.mentionWatch) {
+        form.dataset.mentionWatch = '1';
+        form.addEventListener('change', function (e) {
+            if (e.target && (e.target.name === 'public_reply_type' || e.target.name === 'ticket_reply_type')) {
+                showState();
+            }
+        });
+    }
+}
 
-  // ClipboardJS
+/*
+ * Reword with AI - on an editor only when AI is set up for it and the agent's
+ * role may use it: window.itflowAi, printed by includes/footer.php from
+ * aiClientConfig() (functions/ai.php). The ticket editor asks the Tickets
+ * model. The button rewords; its menu has the other tones (shorter, more
+ * formal, friendlier, plain English, organized, just spelling and grammar)
+ * and Translate, which asks which language - the last one picked comes first
+ * next time. The answer replaces the text in one step, so Undo puts it back.
+ * A textarea's data-ai-client-id says the client it is for, for AI Usage.
+ */
+function itflowAiOn(ticket) {
+    var ai = window.itflowAi || null;
+    return !!(ai && (ticket ? ai.rewordTicket : ai.reword));
+}
 
-  //Fix to allow Clipboard Copying within Bootstrap Modals
-  //For use in Bootstrap Modals or with any other library that changes the focus you'll want to set the focused element as the container value.
-  $.fn.modal.Constructor.prototype._enforceFocus = function() {};
+function itflowAiReword(editor, ticket) {
+    if (!itflowAiOn(ticket)) {
+        return;
+    }
+    var ai = window.itflowAi;
+    var buttonApi = null;
+    var say = function (text, type) {
+        editor.notificationManager.open({ text: text, type: type, timeout: type === 'success' ? 4000 : 8000 });
+    };
+    var done = {
+        reword: 'Reworded', shorter: 'Shortened', formal: 'Made more formal', friendly: 'Made friendlier', plain: 'Put in plain English',
+        structure: 'Organized', proofread: 'Spelling and grammar fixed', translate: 'Translated'
+    };
 
-  // Tooltip
+    function run(tone, language) {
+        if (editor.getContent({ format: 'text' }).trim() === '') {
+            say('Write something first - Reword works on what is there.', 'info');
+            return;
+        }
+        var element = editor.getElement();
+        var clientId = element ? parseInt(element.getAttribute('data-ai-client-id') || '0', 10) : 0;
+        buttonApi.setEnabled(false);
+        editor.setProgressState(true);
+        fetch(ai.endpoint + '?ai_reword' + (ticket ? '&use_case=Tickets' : ''), {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: editor.getContent(), client_id: clientId || 0, tone: tone, language: language || '' })
+        })
+            .then(function (response) {
+                return response.json().catch(function () {
+                    throw new Error('HTTP ' + response.status);
+                });
+            })
+            .then(function (data) {
+                // Leave the user's text alone if it failed
+                if (data.error || !data.rewordedText) {
+                    say(data.error || 'Could not reword the text.', 'error');
+                    return;
+                }
+                editor.undoManager.add();
+                editor.undoManager.transact(function () {
+                    editor.setContent(data.rewordedText);
+                });
+                say((done[tone] || 'Reworded') + (tone === 'translate' ? ' into ' + language : '') + ' - Undo puts your words back.', 'success');
+            })
+            .catch(function () {
+                say('Could not reach ITFlow to reword it - try again.', 'error');
+            })
+            .finally(function () {
+                editor.setProgressState(false);
+                buttonApi.setEnabled(true);
+            });
+    }
 
-  $('button').tooltip({
-    trigger: 'click',
-    placement: 'bottom'
-  });
+    function translate() {
+        var languages = ai.languages || ['English'];
+        var last = '';
+        try {
+            last = localStorage.getItem('itflowAiLanguage') || '';
+        } catch (e) {
+            last = '';
+        }
+        editor.windowManager.open({
+            title: 'Translate with AI',
+            body: {
+                type: 'panel',
+                items: [{ type: 'selectbox', name: 'language', label: 'Into', items: languages.map(function (language) { return { text: language, value: language }; }) }]
+            },
+            initialData: { language: languages.indexOf(last) >= 0 ? last : languages[0] },
+            buttons: [{ type: 'cancel', text: 'Cancel' }, { type: 'submit', text: 'Translate', primary: true }],
+            onSubmit: function (dialog) {
+                var language = dialog.getData().language;
+                dialog.close();
+                try {
+                    localStorage.setItem('itflowAiLanguage', language);
+                } catch (e) {
+                    // Remembering it is only a convenience
+                }
+                run('translate', language);
+            }
+        });
+    }
 
-  function setTooltip(btn, message) {
-    $(btn).tooltip('hide')
-      .attr('data-original-title', message)
-      .tooltip('show');
-  }
+    editor.ui.registry.addSplitButton('reword', {
+        icon: 'ai',
+        tooltip: 'Reword with AI',
+        onAction: function () {
+            run('reword');
+        },
+        onItemAction: function (api, value) {
+            if (value === 'translate') {
+                translate();
+            } else {
+                run(value);
+            }
+        },
+        fetch: function (callback) {
+            var tones = ai.tones || { reword: 'Reword' };
+            callback(Object.keys(tones).map(function (tone) {
+                return { type: 'choiceitem', text: tones[tone], value: tone };
+            }));
+        },
+        onSetup: function (api) {
+            buttonApi = api;
+            return function () {};
+        }
+    });
 
-  function hideTooltip(btn) {
-    setTimeout(function() {
-      $(btn).tooltip('hide');
-    }, 1000);
-  }
+    // Draft a reply - on the ticket reply editor, whose textarea says the ticket
+    var element = editor.getElement();
+    var ticketId = element ? parseInt(element.getAttribute('data-ai-ticket-id') || '0', 10) : 0;
+    if (ticket && ticketId && ai.draft) {
+        itflowAiDraft(editor, ticketId, say);
+    }
+}
 
-  // Clipboard
+/*
+ * Draft with AI - the next reply on the ticket, from what the agent has typed
+ * so far (notes, a line or nothing), for who will read it: the reply type
+ * picked in its form - an internal note, a public note or an email. It
+ * replaces the editor's text in one step, so Undo puts it back.
+ */
+function itflowAiDraft(editor, ticketId, say) {
+    var buttonApi = null;
+    var types = { '0': 'internal', '1': 'public', '2': 'email', '3': 'text' };
+    editor.ui.registry.addButton('aidraft', {
+        icon: 'ai-prompt',
+        text: 'Draft',
+        tooltip: 'Draft the reply with AI - from your notes, if you have typed some',
+        onAction: function () {
+            var form = editor.getElement().closest('form');
+            var picked = form ? form.querySelector('input[name="public_reply_type"]:checked') : null;
+            var notes = editor.getContent({ format: 'text' }).trim() === '' ? '' : editor.getContent();
+            buttonApi.setEnabled(false);
+            editor.setProgressState(true);
+            fetch(window.itflowAi.endpoint + '?ai_ticket_draft', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ticket_id: ticketId, notes: notes, type: types[picked ? picked.value : '2'] || 'email' })
+            })
+                .then(function (response) {
+                    return response.json().catch(function () {
+                        throw new Error('HTTP ' + response.status);
+                    });
+                })
+                .then(function (data) {
+                    if (data.error || !data.html) {
+                        say(data.error || 'Could not draft it.', 'error');
+                        return;
+                    }
+                    editor.undoManager.add();
+                    editor.undoManager.transact(function () {
+                        editor.setContent(data.html);
+                    });
+                    say('Drafted - read it through before it goes. Undo puts back what was there.', 'success');
+                })
+                .catch(function () {
+                    say('Could not reach ITFlow to draft it - try again.', 'error');
+                })
+                .finally(function () {
+                    editor.setProgressState(false);
+                    buttonApi.setEnabled(true);
+                });
+        },
+        onSetup: function (api) {
+            buttonApi = api;
+            return function () {};
+        }
+    });
+}
 
-  var clipboard = new ClipboardJS('.clipboardjs');
+/**
+ * TinyMCE skin options for the current colour mode.
+ *
+ * TinyMCE renders its chrome in its own DOM and its content inside an iframe,
+ * so it inherits nothing from the page - a dark page still got a white editor.
+ * Both the oxide-dark UI skin and the dark content stylesheet are already
+ * vendored under libs/tinymce/skins, so this only has to point at them.
+ */
+function itflowTinyMceSkin() {
+    var dark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+    var root = getComputedStyle(document.documentElement);
+    var body = getComputedStyle(document.body);
 
-  clipboard.on('success', function(e) {
-    setTooltip(e.trigger, 'Copied!');
-    hideTooltip(e.trigger);
-  });
+    function v(name, fallback) {
+        var value = root.getPropertyValue(name).trim();
+        return value || fallback;
+    }
 
-  clipboard.on('error', function(e) {
-    setTooltip(e.trigger, 'Failed!');
-    hideTooltip(e.trigger);
-  });
+    // The editing surface lives in an iframe, so no page CSS reaches it and
+    // custom properties do not cross the boundary either - the values have to
+    // be read here and passed through as literal text. Without this the editor
+    // keeps TinyMCE's own blue-slate dark (#222f3e) next to the app's neutral
+    // grey (#212529), which is close enough to look like a mistake.
+    var contentStyle =
+        'body{' +
+            'background-color:' + v('--bs-body-bg', '#fff') + ';' +
+            'color:' + v('--bs-body-color', '#212529') + ';' +
+            'font-family:' + body.fontFamily + ';' +
+            'font-size:' + body.fontSize + ';' +
+        '}' +
+        'a{color:' + v('--itflow-accent', '#007bff') + ';}' +
+        'table td,table th{border-color:' + v('--bs-border-color', '#dee2e6') + ';}' +
+        // An @mention (functions/ticket_mention.php) - as it shows on the ticket
+        '.itflow-mention{color:' + v('--itflow-accent', '#007bff') + ';background-color:color-mix(in srgb,' + v('--itflow-accent', '#007bff') + ' 12%,transparent);' +
+            'border-radius:.25rem;padding:0 .25em;font-weight:500;white-space:nowrap;}';
 
-  // Enable Popovers
-  $(function () {
-    $('[data-toggle="popover"]').popover()
-  });
+    return {
+        skin: dark ? 'oxide-dark' : 'oxide',
+        content_css: dark ? 'dark' : 'default',
+        content_style: contentStyle
+    };
+}
 
-  // Data Tables
-  new DataTable('.dataTables');
+/**
+ * Chart.js defaults for the current colour mode.
+ *
+ * Charts are drawn to a <canvas>, so no CSS reaches them - every colour has to
+ * be handed to Chart.js as a literal. The pages used to hardcode
+ * Chart.defaults.color = '#292b2c', which was fine while the cards were
+ * effectively light but is invisible on a real dark background.
+ *
+ * Returns the axis/grid colour too, since the charts set that per-scale.
+ */
+function itflowChartDefaults() {
+    var root = getComputedStyle(document.documentElement);
+    var body = getComputedStyle(document.body);
 
+    function v(name, fallback) {
+        return (root.getPropertyValue(name) || '').trim() || fallback;
+    }
+
+    var text = v('--bs-body-color', '#292b2c');
+    var grid = v('--bs-border-color', 'rgba(0, 0, 0, .125)');
+
+    if (window.Chart) {
+        Chart.defaults.font.family = body.fontFamily;
+        Chart.defaults.color = text;
+        Chart.defaults.borderColor = grid;
+    }
+
+    return { text: text, grid: grid };
+}
+
+function itflowBindOnce(name, type, selector, handler) {
+    window.itflowBound = window.itflowBound || {};
+    if (window.itflowBound[name]) {
+        return;
+    }
+    window.itflowBound[name] = true;
+    document.addEventListener(type, function (e) {
+        const match = e.target.closest(selector);
+        if (match) {
+            handler.call(match, e);
+        }
+    });
+}
+
+/**
+ * Run fn once the DOM is ready, the way jQuery's .ready() did.
+ *
+ * js/ajax_modal.js injects a modal payload's <script> tags long after
+ * DOMContentLoaded has fired, so a bare
+ * document.addEventListener('DOMContentLoaded', ...) inside one of them
+ * registers for an event that will never come again and the body silently
+ * never runs. jQuery's .ready() invoked the callback immediately when the
+ * document was already parsed, which is why that pattern worked before the
+ * vanilla conversion. Modal payload scripts must use this instead.
+ */
+function itflowReady(fn) {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', fn);
+    } else {
+        fn();
+    }
+}
+
+function itflowInit() {
+    // Prevents resubmit on forms
+    if (window.history.replaceState) {
+        window.history.replaceState(null, null, window.location.href);
+    }
+
+    // Fade the legacy #alert box out after 5s, then collapse it
+    (function () {
+        const alertEl = document.getElementById('alert');
+        if (!alertEl) {
+            return;
+        }
+        setTimeout(function () {
+            alertEl.style.transition = 'opacity .5s linear';
+            alertEl.style.opacity = '0';
+            setTimeout(function () {
+                alertEl.style.overflow = 'hidden';
+                alertEl.style.transition = 'height .5s ease, margin .5s ease, padding .5s ease';
+                alertEl.style.height = alertEl.offsetHeight + 'px';
+                void alertEl.offsetHeight;
+                alertEl.style.height = '0px';
+                alertEl.style.marginTop = '0';
+                alertEl.style.marginBottom = '0';
+                alertEl.style.paddingTop = '0';
+                alertEl.style.paddingBottom = '0';
+                setTimeout(function () {
+                    alertEl.style.display = 'none';
+                }, 500);
+            }, 500);
+        }, 5000);
+    })();
+
+    // Any select2 field not picked up yet. js/itflow_select.js has normally
+    // done them all already and enhances new ones as they arrive, so this is
+    // a belt-and-braces pass that finds nothing to do.
+    itflowStep('select', function () {
+        itflowSelectAll(document);
+    });
+
+    // The editor isn't loaded everywhere this file is - setup/index.php has none -
+    // and a bare tinymce there threw before the password eyes and copy buttons below
+    // were wired up. Where it is absent the four inits have nothing to do.
+    const itflowTinyMce = typeof tinymce !== 'undefined' ? tinymce : { init: function () {} };
+
+    // Initialize TinyMCE
+    itflowTinyMce.init({
+        ...itflowTinyMceSkin(),
+        selector: '.tinymce-simple',
+        browser_spellcheck: true,
+        contextmenu: false,
+        resize: true,
+        min_height: 300,
+        max_height: 600,
+        promotion: false,
+        branding: false,
+        menubar: false,
+        statusbar: false,
+        toolbar: [
+            { name: 'styles', items: ['styles'] },
+            { name: 'formatting', items: ['bold', 'italic', 'forecolor'] },
+            { name: 'link', items: ['link'] },
+            { name: 'lists', items: ['bullist', 'numlist'] },
+            { name: 'alignment', items: ['alignleft', 'aligncenter', 'alignright', 'alignjustify'] },
+            { name: 'indentation', items: ['outdent', 'indent'] },
+            { name: 'table', items: ['table'] },
+            { name: 'extra', items: ['code', 'fullscreen'] }
+        ],
+        mobile: {
+            menubar: false,
+            plugins: 'autosave lists autolink',
+            toolbar: 'bold italic styles'
+        },
+        convert_urls: false,
+        plugins: 'link image lists table code codesample fullscreen autoresize',
+        setup: function (editor) {
+            editor.on('init', function() {
+                // When the modal closes, mark editor clean
+                const modal = editor.getContainer()?.closest('.modal');
+                if (modal) {
+                    modal.addEventListener('hidden.bs.modal', () => {
+                        editor.undoManager.clear();
+                        editor.setDirty(false);
+                    });
+                }
+            });
+        },
+        license_key: 'gpl'
+    });
+
+    // Initialize TinyMCE with AI
+    itflowTinyMce.init({
+        ...itflowTinyMceSkin(),
+        selector: '.tinymce',
+        browser_spellcheck: true,
+        contextmenu: false,
+        resize: true,
+        min_height: 300,
+        max_height: 600,
+        promotion: false,
+        branding: false,
+        menubar: false,
+        statusbar: false,
+        // Reword first, where it is there - in a narrow editor the end of the toolbar folds away
+        toolbar: [
+            ...(itflowAiOn(false) ? [{ name: 'ai', items: ['reword'] }] : []),
+            { name: 'styles', items: ['styles'] },
+            { name: 'formatting', items: ['bold', 'italic', 'forecolor'] },
+            { name: 'link', items: ['link'] },
+            { name: 'lists', items: ['bullist', 'numlist'] },
+            { name: 'alignment', items: ['alignleft', 'aligncenter', 'alignright', 'alignjustify'] },
+            { name: 'indentation', items: ['outdent', 'indent'] },
+            { name: 'table', items: ['table'] },
+            { name: 'extra', items: ['code', 'fullscreen'] },
+            { name: 'history', items: ['undo', 'redo'] }
+        ],
+        mobile: {
+            menubar: false,
+            plugins: 'autosave lists autolink',
+            toolbar: 'bold italic styles'
+        },
+        convert_urls: false,
+        plugins: 'link image lists table code codesample fullscreen autoresize',
+        license_key: 'gpl',
+        setup: function(editor) {
+            itflowCannedAutocompleter(editor);
+            itflowMentionAutocompleter(editor);
+            editor.on('init', function() {
+                // When the modal closes, mark editor clean
+                const modal = editor.getContainer()?.closest('.modal');
+                if (modal) {
+                    modal.addEventListener('hidden.bs.modal', () => {
+                        editor.undoManager.clear();
+                        editor.setDirty(false);
+                    });
+                }
+            });
+
+            itflowAiReword(editor, false);
+        }
+    });
+
+    // Initialize TinyMCE AI for Tickets
+    itflowTinyMce.init({
+        ...itflowTinyMceSkin(),
+        selector: '.tinymceTicket',
+        browser_spellcheck: true,
+        contextmenu: false,
+        resize: true,
+        min_height: 200,
+        max_height: 600,
+        promotion: false,
+        branding: false,
+        menubar: false,
+        statusbar: false,
+        toolbar: [
+            ...(itflowAiOn(true) ? [{ name: 'ai', items: ['aidraft', 'reword'] }] : []),
+            { name: 'styles', items: ['styles'] },
+            { name: 'formatting', items: ['bold', 'italic', 'forecolor'] },
+            { name: 'link', items: ['link'] },
+            { name: 'lists', items: ['bullist', 'numlist'] },
+            { name: 'indentation', items: ['outdent', 'indent'] },
+            { name: 'history', items: ['undo', 'redo'] },
+            { name: 'custom', items: ['redactButton'] },
+            { name: 'code', items: ['code'] },
+        ],
+        mobile: {
+            menubar: false,
+            toolbar: [
+                ...(itflowAiOn(true) ? [{ name: 'ai', items: ['aidraft', 'reword'] }] : []),
+                { name: 'styles', items: ['styles'] },
+                { name: 'formatting', items: ['bold', 'italic', 'forecolor'] },
+                { name: 'link', items: ['link'] },
+                { name: 'lists', items: ['bullist', 'numlist'] },
+                { name: 'indentation', items: ['outdent', 'indent'] },
+                { name: 'history', items: ['undo', 'redo'] },
+                { name: 'custom', items: ['redactButton'] },
+                { name: 'code', items: ['code'] },
+            ],
+        },
+        convert_urls: false,
+        plugins: 'link image lists table code codesample fullscreen autoresize code',
+        license_key: 'gpl',
+        setup: function(editor) {
+            itflowCannedAutocompleter(editor);
+            itflowMentionAutocompleter(editor);
+            editor.on('init', function() {
+                // When the modal closes, mark editor clean
+                const modal = editor.getContainer()?.closest('.modal');
+                if (modal) {
+                    modal.addEventListener('hidden.bs.modal', () => {
+                        editor.undoManager.clear();
+                        editor.setDirty(false);
+                    });
+                }
+            });
+
+            itflowAiReword(editor, true);
+
+            editor.ui.registry.addButton('redactButton', {
+                icon: 'permanent-pen',
+                tooltip: 'Redact Text',
+                onAction: function() {
+                    var selectedText = editor.selection.getContent({ format: 'text' });
+                    if (selectedText) {
+                        var newContent = '<span style="font-weight: bold; color: red;">[REDACTED]</span>';
+                        editor.selection.setContent(newContent);
+                    } else {
+                        alert('Please select a word to redact');
+                    }
+                }
+            });
+        }
+    });
+
+    // Initialize TinyMCE Redact-only
+    itflowTinyMce.init({
+        ...itflowTinyMceSkin(),
+        selector: '.tinymceRedact',
+        browser_spellcheck: true,
+        contextmenu: false,
+        resize: true,
+        min_height: 300,
+        max_height: 600,
+        promotion: false,
+        branding: false,
+        menubar: false,
+        statusbar: false,
+        toolbar: 'redactButton',
+        mobile: {
+            menubar: false,
+            plugins: 'autosave lists autolink',
+            toolbar: 'redactButton'
+        },
+        convert_urls: false,
+        plugins: 'link image lists table code fullscreen autoresize',
+        license_key: 'gpl',
+        setup: function(editor) {
+
+            editor.on('init', function() {
+                // When the modal closes, mark editor clean
+                const modal = editor.getContainer()?.closest('.modal');
+                if (modal) {
+                    modal.addEventListener('hidden.bs.modal', () => {
+                        editor.undoManager.clear();
+                        editor.setDirty(false);
+                    });
+                }
+            });
+
+            editor.on('keydown', function(e) {
+                e.preventDefault();
+            });
+
+            editor.ui.registry.addButton('redactButton', {
+                icon: 'permanent-pen',
+                tooltip: 'Redact',
+                text: 'REDACT',
+                onAction: function() {
+                    var selectedText = editor.selection.getContent({ format: 'text' });
+                    if (selectedText) {
+                        var newContent = '<span style="font-weight: bold; color: red;">[REDACTED]</span>';
+                        editor.selection.setContent(newContent);
+                    } else {
+                        alert('Please select a word to redact');
+                    }
+                }
+            });
+        }
+    });
+
+    // DateTime
+    document.querySelectorAll('.datetimepicker').forEach(function (el) {
+        if (el._flatpickr) {
+            return;
+        }
+        flatpickr(el, {
+            enableTime: true,
+            time_24hr: true,
+            dateFormat: 'Y-m-d H:i',
+            allowInput: true
+        });
+    });
+
+    // Data Input Mask
+    // IMask replaces jquery.inputmask. Only two aliases were ever used.
+    document.querySelectorAll('[data-mask]').forEach(function (el) {
+        if (el.dataset.imaskReady) {
+            return;
+        }
+        el.dataset.imaskReady = '1';
+        var spec = el.getAttribute('data-inputmask') || '';
+        if (spec.indexOf('ip') !== -1) {
+            // A pattern mask built from MaskedRange blocks will not advance past the dot
+            // until the block reaches its maxLength, so 10.0.0.1 had to be entered as
+            // 010.000.000.001. A regex mask has no per-block completeness rule - it tests
+            // the whole value on every keystroke, so partial input like "10.0." is valid on
+            // its own. Octets are still bounded to 0-255 and leading zeros are still
+            // accepted, matching what jquery.inputmask's 'ip' alias allowed.
+            //
+            // interface_ip / asset_ip are varchar(200) and hold free text as well - 'DHCP'
+            // is written there by the checkbox on these same modals. Masking a value like
+            // that would strip it to nothing the moment the modal opened, so anything not
+            // made of digits and dots is left unmasked instead.
+            if (el.value && !/^[\d.]*$/.test(el.value)) {
+                return;
+            }
+            var octet = '(25[0-5]|2[0-4]\\d|[01]?\\d\\d?)';
+            var octet4 = octet + '?';
+            var octet3 = '(' + octet + '(\\.' + octet4 + ')?)?';
+            var octet2 = '(' + octet + '(\\.' + octet3 + ')?)?';
+            IMask(el, {
+                mask: new RegExp('^(' + octet + '(\\.' + octet2 + ')?)?$')
+            });
+        } else if (spec.indexOf('mac') !== -1) {
+            IMask(el, {
+                mask: 'HH:HH:HH:HH:HH:HH',
+                definitions: { H: /[0-9a-fA-F]/ },
+                prepare: function (s) { return s.toUpperCase(); },
+                lazy: true
+            });
+        }
+    });
+
+    // Password reveal. Replaces Show-Hide-Passwords-Bootstrap-4, which has no Bootstrap 5
+    // release. The data-toggle="password" contract stays on the INPUT, which is where all
+    // 15 call sites write it and where the old plugin expected it - but the plugin built
+    // its own toggle button, and the click has to land on the eye SPAN beside the field.
+    // Binding it to the input instead meant the eye did nothing at all, and clicking into
+    // the field to type your password switched it to type="text" while you typed it.
+    itflowStep('password-reveal', function () {
+        document.querySelectorAll('input[data-toggle="password"]').forEach(function (input) {
+            var group = input.closest('.input-group');
+            var icon = group && group.querySelector('.fa-eye, .fa-eye-slash');
+            var toggle = icon && icon.closest('span, button, a');
+
+            // includes/modal_footer.php re-executes this file on every ajax modal open, so
+            // without a marker anything already on the page collects a second handler and
+            // the next click toggles twice, which looks exactly like nothing happening.
+            if (!toggle || toggle.dataset.itflowPasswordToggle) {
+                return;
+            }
+            toggle.dataset.itflowPasswordToggle = '1';
+
+            // The eye is a plain <span>, so it needs the role to get a pointer cursor and
+            // the tabindex to be reachable at all without a mouse.
+            toggle.setAttribute('role', 'button');
+            toggle.setAttribute('tabindex', '0');
+            toggle.setAttribute('aria-pressed', 'false');
+            toggle.setAttribute('aria-label', 'Show password');
+
+            function toggleReveal() {
+                var hidden = input.type === 'password';
+                input.type = hidden ? 'text' : 'password';
+                icon.classList.toggle('fa-eye', !hidden);
+                icon.classList.toggle('fa-eye-slash', hidden);
+                toggle.setAttribute('aria-pressed', hidden ? 'true' : 'false');
+                toggle.setAttribute('aria-label', hidden ? 'Hide password' : 'Show password');
+            }
+
+            toggle.addEventListener('click', toggleReveal);
+            toggle.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    toggleReveal();
+                }
+            });
+        });
+    });
+
+    // Copy buttons: any element with class="clipboardjs" and its text in
+    // data-clipboard-text, or the field to copy from in data-clipboard-target.
+    // That is ClipboardJS's markup contract, kept so none of the call sites
+    // change - the library itself is no longer used here. Beside a value they
+    // are the small .itflow-copy icon that shows when its row is pointed at
+    // (css/itflow_custom.css); beside an input, an input-group button.
+    //
+    // ClipboardJS copies by selecting a hidden textarea. Under Bootstrap 5 that
+    // textarea has to be inside the open modal or the focus trap pulls focus
+    // back out before the copy runs, so e5d1fe2 pinned ClipboardJS's `container`
+    // to the last .modal on the page. A container is fixed for the life of the
+    // instance, though, and the last .modal was usually the wrong one: a HIDDEN
+    // modal on any page that includes one up front (invoice, credentials, asset,
+    // contact), and a DETACHED one everywhere else once any ajax modal had been
+    // opened and closed - the notifications bell included. A hidden or detached
+    // textarea holds no selection, so nothing was copied, and since ClipboardJS
+    // reports success from the text rather than from the copy itself, all of
+    // those clicks still flashed "Copied!".
+    //
+    // So this resolves everything at click time. Bound once on document, as this
+    // file re-runs on every ajax modal open.
+    itflowStep('clipboard', function () {
+        itflowBindOnce('itflowCopy', 'click', '.clipboardjs', function (e) {
+            // Copy Guest URL (invoice, quote) is an <a href="#"> - without this
+            // every copy also jumped the page back to the top.
+            e.preventDefault();
+
+            const trigger = this;
+            const target = itflowCopyFeedbackTarget(trigger);
+            // data-clipboard-target="input[name=uri]" copies what is in that
+            // field now - in its own input group first - rather than the value
+            // the page was drawn with, so an edited field copies the edit
+            const source = trigger.getAttribute('data-clipboard-target');
+            const field = source ? ((trigger.closest('.input-group') || document).querySelector(source) || document.querySelector(source)) : null;
+            const text = field ? (field.value || '') : (trigger.getAttribute('data-clipboard-text') || '');
+
+            // An empty field would otherwise wipe whatever is on the clipboard
+            if (text === '') {
+                flashTooltip(target, 'Nothing to copy');
+                return;
+            }
+
+            itflowCopyText(text, trigger).then(
+                function () { flashTooltip(target, 'Copied!'); },
+                function () { flashTooltip(target, 'Failed!'); }
+            );
+        });
+    });
+
+    // Enable Popovers
+    itflowStep('popovers', function () {
+        document.querySelectorAll('[data-bs-toggle="popover"]').forEach(function (el) {
+            bootstrap.Popover.getOrCreateInstance(el);
+        });
+    });
+
+    // Data Tables - only loaded on agent and admin pages (includes/footer.php);
+    // setup and Get started load this file without it
+    itflowStep('datatables', function () {
+        if (typeof DataTable !== 'undefined') {
+            new DataTable('.dataTables');
+        }
+    });
+
+    // Phone inputs
+    // js/phone_inputs.js is only loaded where phone fields exist - the agent
+    // footer and the portal profile page. Referencing the bare identifier here
+    // would throw a ReferenceError anywhere it is absent (setup/index.php loads
+    // app.js on its own), and that throw happens while evaluating the argument,
+    // before itflowStep's try/catch can contain it - taking every step after
+    // this one down with it.
+    itflowStep('phone-inputs', function () {
+        if (typeof initPhoneInputs === 'function') {
+            initPhoneInputs();
+        }
+    });
+}
+
+// modal_footer.php re-loads this file on every ajax modal open, so run now if
+// the document is already parsed, otherwise wait for it.
+itflowReady(itflowInit);
+
+/*
+ * Calendar event modals - the All day switch shows or hides the time row.
+ *
+ * The form uses four separate fields (date from / date to / time from / time to),
+ * so nothing here rewrites a value or changes an input type. An earlier version
+ * flipped a single datetime-local input to type="date", which a browser answers by
+ * silently discarding a value it now considers invalid - a fragile arrangement that
+ * left the fields empty whenever this handler had not run.
+ *
+ * required tracks visibility: a hidden required field blocks form submission with an
+ * unfocusable-element error that the user cannot act on.
+ *
+ * Delegated on document because the edit event modal is injected by ajax. The
+ * namespaced .off() keeps this to a single handler - modal_footer.php re-loads this
+ * file on every ajax modal open.
+ */
+/**
+ * Initial focus for modals with no autofocus target.
+ *
+ * Bootstrap's focus trap sends focus to the FIRST focusable child whenever it
+ * lands outside the trap, and in ITFlow's modals that is the header close
+ * button - so opening any of the ~230 modals without an autofocus field parked
+ * a focus ring on the X. Putting focus on the dialog itself is what Bootstrap
+ * intends, keeps the trap and Escape working, and leaves screen readers
+ * announcing the dialog rather than "Close".
+ *
+ * Deliberately does NOT auto-focus the first input: that would pop the
+ * keyboard on mobile for every modal, which is a bigger change than the bug.
+ */
+itflowBindOnce('itflowModalFocus', 'shown.bs.modal', '.modal', function () {
+    if (this.querySelector('[autofocus]')) {
+        return;
+    }
+    this.focus();
 });
+
+/**
+ * A window opened over another - the + beside a category picker opens the
+ * category window over the form - goes above it with its backdrop, so the
+ * form underneath is dimmed rather than drawn over the new window's shade.
+ * Bootstrap gives every modal the same z-index. Closing the top one takes the
+ * page's modal-open class off, so it is put back while one is still open.
+ */
+itflowBindOnce('itflowModalStack', 'show.bs.modal', '.modal', function () {
+    const below = document.querySelectorAll('.modal.show').length;
+    if (!below) {
+        return;
+    }
+    const z = 1055 + 20 * below;
+    this.style.zIndex = z;
+    // Bootstrap adds the backdrop straight after this event
+    setTimeout(function () {
+        const backdrops = document.querySelectorAll('.modal-backdrop');
+        if (backdrops.length) {
+            backdrops[backdrops.length - 1].style.zIndex = z - 5;
+        }
+    });
+});
+itflowBindOnce('itflowModalStackHidden', 'hidden.bs.modal', '.modal', function () {
+    if (document.querySelector('.modal.show')) {
+        document.body.classList.add('modal-open');
+    }
+});
+
+/**
+ * A required field left empty on a tab that isn't showing - the Ticket tab of
+ * a template while Sets up is open, a fill-in on Details while Tasks is -
+ * would stop the form going with nothing to see: the browser can't point at
+ * a field it can't show. Its tab is opened, so the browser's message lands on
+ * it. 'invalid' doesn't bubble, hence the capture.
+ */
+if (!window.itflowInvalidTab) {
+    window.itflowInvalidTab = true;
+    document.addEventListener('invalid', function (e) {
+        const pane = e.target.closest ? e.target.closest('.tab-pane') : null;
+        if (!pane || pane.classList.contains('active') || !pane.id || !window.bootstrap) {
+            return;
+        }
+        const scope = pane.closest('form, .modal, .tab-content') || document;
+        const root = scope.parentElement || document;
+        const trigger = root.querySelector('[data-bs-toggle][href="#' + pane.id + '"], [data-bs-toggle][data-bs-target="#' + pane.id + '"]');
+        if (trigger) {
+            bootstrap.Tab.getOrCreateInstance(trigger).show();
+        }
+    }, true);
+}
+
+/**
+ * The + beside a category picker (categoryAddButtonHtml()): note which
+ * picker it is beside, for js/category_form.js to put the new category in.
+ */
+itflowBindOnce('itflowCategoryAdd', 'click', '[data-category-add]', function () {
+    const group = this.closest('.input-group') || this.parentElement;
+    window.itflowCategoryTarget = group ? group.querySelector('select') : null;
+});
+
+/**
+ * Warn before leaving the page with unsaved editor content.
+ *
+ * Each TinyMCE config used to assign window.onbeforeunload for its own editor.
+ * That is a single slot, so whichever editor initialised last owned it. Opening
+ * any ajax modal with an editor (Edit Ticket, Edit Reply) handed the slot to the
+ * modal's editor, and once that modal closed nothing guarded the page's own
+ * editor - a half-written ticket reply was lost on the next link click with no
+ * prompt. One listener now checks every live editor.
+ *
+ * Editors inside an open modal are skipped, as before: the modal is where that
+ * work gets submitted or discarded. Editors from a closed ajax modal are removed
+ * by js/ajax_modal.js, so tinymce.get() no longer returns them.
+ *
+ * Flagged on window because modal_footer.php re-loads this file on every ajax
+ * modal open.
+ */
+if (!window.itflowEditorUnloadGuard) {
+    window.itflowEditorUnloadGuard = true;
+    window.addEventListener('beforeunload', function (e) {
+        if (typeof tinymce === 'undefined') {
+            return;
+        }
+        const unsaved = tinymce.get().some(function (editor) {
+            const inVisibleModal = editor.getContainer()?.closest('.modal.show');
+            return !inVisibleModal && editor.isDirty();
+        });
+        if (unsaved) {
+            e.preventDefault();
+            e.returnValue = '';
+        }
+    });
+}
+
+/**
+ * Let TinyMCE's popups take focus inside a modal.
+ *
+ * TinyMCE renders its "..." overflow drawer, menus, colour picker and dialogs
+ * (link, source code, table) in .tox-tinymce-aux, appended to <body> - outside
+ * the modal. Bootstrap 5's focus trap pulls any focus outside the open modal
+ * back to its first focusable element (the header X), so the drawer closed as
+ * soon as it opened and the link dialog would not take typing. Bootstrap 4 was
+ * fine only because this file used to no-op _enforceFocus.
+ *
+ * Order matters: this is bound once at first load, and Bootstrap adds its own
+ * focusin listener each time a modal opens, so this one always runs first and
+ * stopImmediatePropagation keeps Bootstrap's from firing. The trap still holds
+ * for everything else.
+ */
+itflowBindOnce('itflowTinyMceFocus', 'focusin', '.tox-tinymce-aux', function (e) {
+    e.stopImmediatePropagation();
+});
+
+// A PIN or code shown as dots (.itflow-secret) - the eye beside it shows it, and again hides it
+itflowBindOnce('itflowSecret', 'click', '.itflow-secret-toggle', function (e) {
+    e.preventDefault();
+    const secret = this.closest('.itflow-secret');
+    if (!secret) {
+        return;
+    }
+    const shown = secret.classList.toggle('is-shown');
+    const icon = this.querySelector('i');
+    if (icon) {
+        icon.classList.toggle('fa-eye', !shown);
+        icon.classList.toggle('fa-eye-slash', shown);
+    }
+    this.setAttribute('title', shown ? 'Hide' : 'Show');
+    this.setAttribute('aria-pressed', shown ? 'true' : 'false');
+});
+
+/*
+ * Keep the end date at or after the start date, without shortening a longer span
+ * the user has already chosen.
+ */
+itflowBindOnce('itflowEventDate', 'change', '.event-start-date', function () {
+
+    const endField = document.getElementById(this.id.replace(/_start_date$/, '_end_date'));
+
+    if (!endField || !this.value) {
+        return;
+    }
+
+    if (!endField.value || endField.value < this.value) {
+        endField.value = this.value;
+    }
+});
+
+/*
+ * Default the end time to an hour after the start, leaving a longer span alone.
+ * A start late in the evening rolls the end onto the following day rather than
+ * wrapping round to an end that precedes the start.
+ */
+itflowBindOnce('itflowEventTime', 'change', '.event-start-time', function () {
+
+    const prefix = this.id.replace(/_start_time$/, '');
+    const endField = document.getElementById(prefix + '_end_time');
+
+    if (!endField || !this.value) {
+        return;
+    }
+
+    if (endField.value && endField.value > this.value) {
+        return;
+    }
+
+    const parts = this.value.split(':');
+    const end = new Date(2000, 0, 1, Number(parts[0]), Number(parts[1]));
+    end.setHours(end.getHours() + 1);
+
+    const pad = (n) => String(n).padStart(2, '0');
+    endField.value = pad(end.getHours()) + ':' + pad(end.getMinutes());
+
+    // Crossed midnight - carry the end date forward so the event still ends after
+    // it starts
+    if (end.getDate() !== 1) {
+        const startDate = document.getElementById(prefix + '_start_date');
+        const endDate = document.getElementById(prefix + '_end_date');
+
+        if (startDate && endDate && startDate.value && endDate.value <= startDate.value) {
+            const next = new Date(startDate.value + 'T00:00:00');
+            next.setDate(next.getDate() + 1);
+            endDate.value = next.getFullYear() + '-' + pad(next.getMonth() + 1) + '-' + pad(next.getDate());
+        }
+    }
+});
+
+/*
+ * Bootstrap tooltips are only used for the brief "Copied!" flash on a copy
+ * button. Everything else relies on the browser's own title attribute.
+ *
+ * This used to be `$('button').tooltip({trigger: 'click'})`, which attached a
+ * click-toggled tooltip to EVERY button in the app. A click-triggered tooltip
+ * is only dismissed by clicking the same button again - clicking anywhere else
+ * leaves it on screen - and if the button was then removed from the DOM by a
+ * modal closing or an ajax refresh, its tooltip was orphaned and stayed up
+ * until the next page load.
+ */
+function flashTooltip(button, message) {
+    const el = button instanceof Element ? button : document.querySelector(button);
+    if (!el) {
+        return;
+    }
+    bootstrap.Tooltip.getInstance(el)?.dispose();
+    const tip = new bootstrap.Tooltip(el, {
+        trigger: 'manual',
+        placement: 'bottom',
+        title: message
+    });
+    tip.show();
+
+    setTimeout(function () {
+        tip.dispose();
+    }, 1000);
+}
+
+/**
+ * Copy text to the clipboard. Resolves once it is really there and rejects
+ * when it could not be written, so callers can flash "Copied!" or "Failed!"
+ * honestly.
+ *
+ * The async Clipboard API involves no selection and no focus, so no modal's
+ * focus trap can get in its way. Browsers only offer it in a secure context
+ * (HTTPS or localhost), so a plain-HTTP install falls back to a textarea and
+ * execCommand('copy') - placed inside the trigger's own modal, worked out now
+ * rather than in advance.
+ */
+function itflowCopyText(text, trigger) {
+    if (window.isSecureContext && navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+    }
+    return itflowCopyTextLegacy(text, trigger)
+        ? Promise.resolve()
+        : Promise.reject(new Error('Copy failed'));
+}
+
+function itflowCopyTextLegacy(text, trigger) {
+    // The textarea has to be rendered and focusable to hold a selection - a
+    // hidden or detached one is exactly what broke - and inside the open modal,
+    // or Bootstrap's focus trap takes focus back before the copy runs.
+    const host = (trigger && trigger.closest('.modal')) || document.body;
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', ''); // no on-screen keyboard on touch devices
+    area.style.position = 'fixed';
+    area.style.top = '0';
+    area.style.left = '-9999px';
+    host.appendChild(area);
+    area.focus({ preventScroll: true });
+    area.select();
+    area.setSelectionRange(0, text.length); // iOS ignores select() alone
+
+    let copied = false;
+    try {
+        copied = document.execCommand('copy');
+    } catch (err) {
+        copied = false;
+    }
+    area.remove();
+
+    // Removing the focused textarea leaves focus on <body> - hand it back.
+    if (trigger && trigger.isConnected) {
+        trigger.focus({ preventScroll: true });
+    }
+    return copied;
+}
+
+/**
+ * Where to flash a copy button's "Copied!". Bootstrap closes a dropdown on the
+ * same click, so a dropdown item like Copy Guest URL is hidden by the time the
+ * tooltip is positioned - and a tooltip on a hidden element is drawn in the
+ * top-left corner of the window. Use the dropdown's wrapper instead, which on
+ * invoice and quote is shrink-wrapped around the toggle. Not the toggle itself:
+ * it already holds the Dropdown instance, and Bootstrap refuses a second
+ * instance on one element.
+ */
+function itflowCopyFeedbackTarget(trigger) {
+    const menu = trigger.closest('.dropdown-menu');
+    return (menu && menu.parentElement) || trigger;
+}
+
+/**
+ * Show a Bootstrap toast from JavaScript.
+ *
+ * The PHP side renders its own toast markup in includes/inc_alert_feedback.php
+ * so that user-supplied text never reaches a JS string literal. This helper is
+ * for toasts raised by client-side code, where the caller controls the text.
+ *
+ * Replaces toastr.success() / .error() / .warning() / .info().
+ */
+function itflowToast(message, type) {
+    var styles = {
+        success: 'text-bg-success',
+        info: 'text-bg-info',
+        warning: 'text-bg-warning',
+        alert: 'text-bg-warning',
+        error: 'text-bg-danger',
+        danger: 'text-bg-danger'
+    };
+    var style = styles[type] || styles.success;
+    var darkText = type === 'warning' || type === 'alert' || type === 'info';
+
+    var container = document.querySelector('.toast-container.itflow-toast-js');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'toast-container itflow-toast-js position-fixed top-0 end-0 p-3';
+        container.style.zIndex = '1090';
+        document.body.appendChild(container);
+    }
+
+    var toast = document.createElement('div');
+    toast.className = 'toast fade align-items-center ' + style + ' border-0';
+    toast.setAttribute('role', 'alert');
+    toast.setAttribute('aria-live', 'assertive');
+    toast.setAttribute('aria-atomic', 'true');
+
+    var flex = document.createElement('div');
+    flex.className = 'd-flex';
+
+    var body = document.createElement('div');
+    body.className = 'toast-body';
+    body.textContent = message;
+
+    var close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'btn-close ' + (darkText ? '' : 'btn-close-white') + ' me-2 m-auto';
+    close.setAttribute('data-bs-dismiss', 'toast');
+    close.setAttribute('aria-label', 'Close');
+
+    flex.appendChild(body);
+    flex.appendChild(close);
+    toast.appendChild(flex);
+    container.appendChild(toast);
+
+    toast.addEventListener('hidden.bs.toast', function () {
+        toast.remove();
+    });
+    bootstrap.Toast.getOrCreateInstance(toast, {
+        animation: true,
+        autohide: true,
+        delay: 5000
+    }).show();
+}
+
+/*
+ * Live IP check for the network IP add/edit modals (agent/modals/network/).
+ *
+ * Calls the same checkIpForNetwork() the POST handler uses, via
+ * ajax.php?network_ip_check, so the field reports exactly the verdict the save
+ * will reach. Advisory only - the handler re-checks on submit, and this never
+ * blocks submission.
+ *
+ * Lives here rather than in the modal because includes/modal_footer.php
+ * re-executes this file on every ajax modal open, so the function is already
+ * defined by the time the modal's inline call runs.
+ */
+function itflowWatchNetworkIp(networkId, ipId) {
+
+    var input = document.getElementById('networkIpAddress');
+    var feedback = document.getElementById('networkIpFeedback');
+
+    if (!input || !feedback) {
+        return;
+    }
+
+    var timer = null;
+    var lastChecked = null;
+
+    function render(cls, html) {
+        feedback.className = 'small mt-1 ' + cls;
+        feedback.innerHTML = html;
+    }
+
+    function check() {
+
+        var value = input.value.trim();
+
+        if (value === '') {
+            render('', '');
+            input.classList.remove('is-valid', 'is-invalid');
+            lastChecked = null;
+            return;
+        }
+
+        if (value === lastChecked) {
+            return;
+        }
+
+        lastChecked = value;
+
+        itflowGet(
+            'ajax.php',
+            {network_ip_check: 'true', network_id: networkId, ip_id: ipId, ip: value},
+            function (data) {
+
+                var result;
+
+                try {
+                    result = JSON.parse(data);
+                } catch (e) {
+                    return;
+                }
+
+                // A slow earlier response must not paint over a newer one
+                if (input.value.trim() !== lastChecked) {
+                    return;
+                }
+
+                render(result.ok ? 'text-success' : 'text-danger', result.message);
+                input.classList.toggle('is-valid', result.ok);
+                input.classList.toggle('is-invalid', !result.ok);
+            }
+        );
+    }
+
+    input.addEventListener('input', function () {
+        clearTimeout(timer);
+        timer = setTimeout(check, 350);
+    });
+
+    input.addEventListener('blur', check);
+
+}
+

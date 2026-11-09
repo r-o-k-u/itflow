@@ -1,0 +1,143 @@
+<?php
+
+require_once '../../../includes/modal_header.php';
+
+$asset_ids = array_map('intval', $_GET['asset_ids'] ?? []);
+
+$count = count($asset_ids);
+
+ob_start();
+
+?>
+
+<div class="modal-header bg-dark">
+    <h5 class="modal-title"><i class="fas fa-fw fa-life-ring me-2"></i>Create Tickets for <strong><?= $count ?></strong> asset<?= $count === 1 ? '' : 's' ?></h5>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+</div>
+
+<form action="post.php" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+    <?php foreach ($asset_ids as $asset_id) { ?><input type="hidden" name="asset_ids[]" value="<?= $asset_id ?>"><?php } ?>
+
+    <div class="modal-body">
+
+        <?php
+        $ticket_template_field = 'bulk_ticket_template_id';
+        $ticket_template_hint = "Picking one fills in the tickets - change anything before they are made. <span class=\"font-monospace\">[Asset]</span>, <span class=\"font-monospace\">[Contact]</span> and the like are filled in for each; with <span class=\"font-monospace\">[Asset]</span> in the subject, the asset's name isn't put in front. What the template asks for is answered once, for them all.";
+        require_once '../../includes/inc_ticket_template_select.php';
+        ?>
+
+        <div class="mb-3">
+            <label>Subject <strong class="text-danger">*</strong></label>
+            <div class="input-group">
+                    <span class="input-group-text"><i class="fa fa-fw fa-tag"></i></span>
+                <input type="text" class="form-control" name="bulk_subject" data-template-field="subject" placeholder="Asset Name will be prepended to Subject" maxlength="500" required>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <textarea class="form-control tinymceTicket" id="textInput" name="bulk_details" data-template-field="details"></textarea>
+        </div>
+
+        <div class="row">
+
+            <div class="col">
+                <div class="mb-3">
+                    <label>Priority <strong class="text-danger">*</strong></label>
+                    <div class="input-group">
+                            <span class="input-group-text"><i class="fa fa-fw fa-thermometer-half"></i></span>
+                        <select class="form-select select2" name="bulk_priority" data-template-field="priority" required>
+                            <option data-color="var(--bs-info)">Low</option>
+                            <option selected data-color="var(--bs-warning)">Medium</option>
+                            <option data-color="var(--bs-danger)">High</option>
+                            <option data-color="var(--bs-emphasis-color)">Urgent</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col">
+                <div class="mb-3">
+                    <label>Category</label>
+                    <div class="input-group">
+                            <span class="input-group-text"><i class="fa fa-fw fa-layer-group"></i></span>
+                        <select class="form-select select2" name="bulk_category" data-template-field="category">
+                            <option value="0">- Not Categorized -</option>
+                            <?= categoryOptionsHtml('Ticket') ?>
+                        </select>
+                        <?= categoryAddButtonHtml('Ticket', 'btn btn-secondary') ?>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <div class="mb-3">
+            <label>Assign to</label>
+            <div class="input-group">
+                    <span class="input-group-text"><i class="fa fa-fw fa-user-check"></i></span>
+                <select class="form-select select2" name="bulk_assigned_to" data-template-field="assigned">
+                    <option value="0">Not Assigned</option>
+                    <?php
+
+                    $sql = mysqli_query(
+                        $mysqli,
+                        "SELECT user_id, user_name, user_avatar FROM users
+                        WHERE user_type = 1 AND user_status = 1 AND user_archived_at IS NULL ORDER BY user_name ASC"
+                    );
+                    while ($row = mysqli_fetch_assoc($sql)) {
+                        $user_id = intval($row['user_id']);
+                        $user_name = escapeHtml($row['user_name']); ?>
+                        <option <?php if ($session_user_id == $user_id) { echo "selected"; } ?> value="<?= $user_id ?>"<?= selectOptionUser($row['user_id'], $row['user_name'], $row['user_avatar'] ?? '') ?>><?= $user_name ?></option>
+                    <?php } ?>
+                </select>
+            </div>
+        </div>
+
+        <div class="mb-3">
+            <label>Project</label>
+            <div class="input-group">
+                    <span class="input-group-text"><i class="fa fa-fw fa-project-diagram"></i></span>
+                <select class="form-select select2" name="bulk_project">
+                    <option value="0">- None -</option>
+                    <?php
+
+                    // Open projects of the ticked assets' clients, and internal ones - the only ones their tickets can go on
+                    $bulk_asset_ids = implode(',', array_merge([0], $asset_ids));
+                    $sql_projects = mysqli_query($mysqli, "SELECT project_id, project_prefix, project_number, project_name, client_name FROM projects
+                        LEFT JOIN clients ON client_id = project_client_id
+                        WHERE project_completed_at IS NULL AND project_archived_at IS NULL
+                        AND (project_client_id = 0 OR project_client_id IN (SELECT asset_client_id FROM assets WHERE asset_id IN ($bulk_asset_ids)))
+                        " . clientScopeSql('project_client_id') . "
+                        ORDER BY project_client_id = 0, project_name ASC");
+                    while ($row = mysqli_fetch_assoc($sql_projects)) {
+                        $project_id_select = intval($row['project_id']);
+                        $project_name_select = escapeHtml($row['project_name']); ?>
+                        <option value="<?= $project_id_select ?>" data-icon="fas fa-project-diagram" data-description="<?= escapeHtml(projectReference($row) . ' - ' . ($row['client_name'] ?? 'internal')) ?>"><?= $project_name_select ?></option>
+
+                    <?php } ?>
+                </select>
+            </div>
+        </div>
+
+        <?php if ($config_module_enable_accounting) { ?>
+        <div class="mb-3">
+            <div class="form-check form-switch">
+                <input type="checkbox" class="form-check-input" name="bulk_billable" data-template-field="billable" <?php if ($config_ticket_default_billable == 1) { echo "checked"; } ?> value="1" id="billableSwitch">
+                <label class="form-check-label" for="billableSwitch">Billable</label>
+            </div>
+        </div>
+        <?php } ?>
+
+    </div>
+
+    <div class="modal-footer">
+        <button type="submit" name="bulk_add_asset_ticket" class="btn btn-primary text-bold"><i class="fas fa-check me-2"></i>Create Tickets</button>
+        <button type="button" class="btn btn-light" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>Cancel</button>
+    </div>
+</form>
+
+<script src="/agent/js/ticket_tasks_modal.js"></script>
+
+<?php
+require_once '../../../includes/modal_footer.php';

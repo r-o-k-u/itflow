@@ -1,407 +1,949 @@
 <?php
 
-// Enforce a Content Security Policy for security against cross-site scripting
+// Unified login (Agent + Client) using one email & password
+
 header("Content-Security-Policy: default-src 'self'");
 
 if (!file_exists('config.php')) {
-    header("Location: setup.php");
-    exit;
+    header("Location: /setup");
+    exit();
 }
 
 require_once "config.php";
+require_once "functions.php";
+require_once "libs/totp/totp.php";
 
-// Set Timezone
-require_once "includes/inc_set_timezone.php";
+require_once __DIR__ . "/includes/session_init.php";
 
-// Check if the application is configured for HTTPS-only access
-if ($config_https_only && (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on') && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')) {
+if (!isset($config_enable_setup) || $config_enable_setup == 1) {
+    header("Location: /setup");
+    exit();
+}
+
+if (
+    $config_https_only
+    && (!isset($_SERVER['HTTPS']) || $_SERVER['HTTPS'] !== 'on')
+    && (!isset($_SERVER['HTTP_X_FORWARDED_PROTO']) || $_SERVER['HTTP_X_FORWARDED_PROTO'] !== 'https')
+) {
     echo "Login is restricted as ITFlow defaults to HTTPS-only for enhanced security. To login using HTTP, modify the config.php file by setting config_https_only to false. However, this is strongly discouraged, especially when accessing from potentially unsafe networks like the internet.";
     exit;
 }
 
-require_once "functions.php";
+require_once "includes/inc_set_timezone.php";
 
-require_once "plugins/totp/totp.php";
+// A managed instance its manager has suspended shows why, rather than a sign-in that leads nowhere
+managedRequestGuard('login');
 
+$session_ip = escapeSql(getIP());
+$session_user_agent = escapeSql($_SERVER['HTTP_USER_AGENT'] ?? '');
 
-// IP & User Agent for logging
-$session_ip = sanitizeInput(getIP());
-$session_user_agent = sanitizeInput($_SERVER['HTTP_USER_AGENT']);
+// IMPORTANT (Option B support): ensure this exists in this scope so logAudit() can use it
+$session_user_id = intval($_SESSION['user_id'] ?? 0);
 
-// Block brute force password attacks - check recent failed login attempts for this IP
-//  Block access if more than 15 failed login attempts have happened in the last 10 minutes
-$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT(log_id) AS failed_login_count FROM logs WHERE log_ip = '$session_ip' AND log_type = 'Login' AND log_action = 'Failed' AND log_created_at > (NOW() - INTERVAL 10 MINUTE)"));
+// The count below and the logAudit() failure write that feeds it are far apart, with
+// password_verify() in between, so a burst of parallel attempts would all read the
+// same sub-threshold count and all pass. Serialize per IP for the whole request.
+// Only a POST can write a failure, so only a POST needs the lock. The connection is
+// non-persistent (includes/db.php), so it releases at the end of the request - after
+// the failure has been recorded. A timeout returns 0 and fails open rather than
+// locking anyone out.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $login_lock_name = 'itflow_login_ip_' . md5($session_ip);
+    $login_lock = mysqli_fetch_row(mysqli_query($mysqli, "SELECT GET_LOCK('$login_lock_name', 10)"));
+
+    if (empty($login_lock[0])) {
+        error_log("ITFlow: timed out waiting on the login rate limit lock for $session_ip, proceeding unserialized");
+    }
+}
+
+// Agents' and portal contacts' failures alike (functions/sign_in.php)
+$row = mysqli_fetch_assoc(mysqli_query(
+    $mysqli,
+    "SELECT COUNT(log_id) AS failed_login_count
+     FROM logs
+     WHERE log_ip = '$session_ip'
+       AND log_type IN ('" . implode("', '", SIGN_IN_TYPES) . "')
+       AND log_action IN ('" . implode("', '", SIGN_IN_FAILED) . "')
+       AND log_created_at > (NOW() - INTERVAL " . SIGN_IN_WINDOW_MINUTES . " MINUTE)"
+));
 $failed_login_count = intval($row['failed_login_count']);
 
-if ($failed_login_count >= 15) {
-
-    // Logging
-    logAction("Login", "Blocked", "$session_ip was blocked access to login due to IP lockout");
-
-    // Inform user & quit processing page
+if ($failed_login_count >= SIGN_IN_LOCKOUT) {
+    // Make sure global session_user_id is not required here (will be 0 anyway)
+    logAudit("Login", "Blocked", "Sign in turned away from $session_ip - " . SIGN_IN_LOCKOUT . " failed sign-ins in " . SIGN_IN_WINDOW_MINUTES . " minutes");
     header("HTTP/1.1 429 Too Many Requests");
     exit("<h2>$config_app_name</h2>Your IP address has been blocked due to repeated failed login attempts. Please try again later. <br><br>This action has been logged.");
 }
 
-// Query Settings for company
-$sql_settings = mysqli_query($mysqli, "SELECT * FROM settings LEFT JOIN companies ON settings.company_id = companies.company_id WHERE settings.company_id = 1");
-$row = mysqli_fetch_array($sql_settings);
+// Settings
+$sql_settings = mysqli_query($mysqli, "
+    SELECT settings.*, companies.company_name, companies.company_logo
+    FROM settings
+    LEFT JOIN companies ON settings.company_id = companies.company_id
+    WHERE settings.company_id = 1
+");
+$row = mysqli_fetch_assoc($sql_settings);
 
-// Company info
-$company_name = $row['company_name'];
-$company_logo = $row['company_logo'];
-$config_start_page = nullable_htmlentities($row['config_start_page']);
-$config_login_message = nullable_htmlentities($row['config_login_message']);
+$company_name          = $row['company_name'];
+$company_logo          = $row['company_logo'];
+$config_start_page     = escapeHtml($row['config_start_page']);
+$config_login_message  = escapeHtml($row['config_login_message']);
 
-// Mail
-$config_smtp_host = $row['config_smtp_host'];
-$config_smtp_port = intval($row['config_smtp_port']);
+$config_smtp_provider       = $row['config_smtp_provider'];
+$config_smtp_host       = $row['config_smtp_host'];
+$config_smtp_port       = intval($row['config_smtp_port']);
 $config_smtp_encryption = $row['config_smtp_encryption'];
-$config_smtp_username = $row['config_smtp_username'];
-$config_smtp_password = $row['config_smtp_password'];
-$config_mail_from_email = sanitizeInput($row['config_mail_from_email']);
-$config_mail_from_name = sanitizeInput($row['config_mail_from_name']);
+$config_smtp_username   = $row['config_smtp_username'];
+$config_smtp_password   = $row['config_smtp_password'];
+$config_mail_from_email = escapeSql($row['config_mail_from_email']);
+$config_mail_from_name  = escapeSql($row['config_mail_from_name']);
 
-// Client Portal Enabled
-$config_client_portal_enable = intval($row['config_client_portal_enable']);
-
-// Login key (if setup)
-$config_login_key_required = $row['config_login_key_required'];
-$config_login_key_secret = $row['config_login_key_secret'];
-
+$config_client_portal_enable     = intval($row['config_client_portal_enable']);
 $config_login_remember_me_expire = intval($row['config_login_remember_me_expire']);
+$config_whitelabel_enabled       = intval($row['config_whitelabel_enabled']);
 
-// Login key verification
-//  If no/incorrect 'key' is supplied, send to client portal instead
-if ($config_login_key_required) {
-    if (!isset($_GET['key']) || $_GET['key'] !== $config_login_key_secret) {
-        header("Location: client");
-        exit();
-    }
-}
+$config_login_key_required = $row['config_login_key_required'];
+$config_login_key_secret   = $row['config_login_key_secret'];
 
-// HTTP-Only cookies
-ini_set("session.cookie_httponly", true);
+$azure_client_id = $row['config_azure_client_id'] ?? null;
 
-// Tell client to only send cookie(s) over HTTPS
-if ($config_https_only || !isset($config_https_only)) {
-    ini_set("session.cookie_secure", true);
-}
+$response         = null;
+$token_field      = null;
+$show_role_choice = false;
 
-// Handle POST login request
-if (isset($_POST['login'])) {
+$email    = '';
+$password = ''; // only ever used in the initial POST request
 
-    // Sessions should start after the user has POSTed data
-    session_start();
-
-    // Passed login brute force check
-    $email = sanitizeInput($_POST['email']);
-    $password = $_POST['password'];
-
-    $current_code = 0; // Default value
-    if (isset($_POST['current_code'])) {
-        $current_code = intval($_POST['current_code']);
-    }
-
-    $row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT * FROM users LEFT JOIN user_settings on users.user_id = user_settings.user_id WHERE user_email = '$email' AND user_archived_at IS NULL AND user_status = 1 AND user_type = 1"));
-
-    // Check password
-    if ($row && password_verify($password, $row['user_password'])) {
-
-        // User password correct (partial login)
-
-        // Set temporary user variables
-        $user_name = sanitizeInput($row['user_name']);
-        $user_id = intval($row['user_id']);
-        $session_user_id = $user_id; // to pass the user_id to logAction function
-        $user_email = sanitizeInput($row['user_email']);
-        $token = sanitizeInput($row['user_token']);
-        $force_mfa = intval($row['user_config_force_mfa']);
-        $user_role_id = intval($row['user_role_id']);
-        $user_encryption_ciphertext = $row['user_specific_encryption_ciphertext'];
-        $user_extension_key = $row['user_extension_key'];
-
-        $mfa_is_complete = false; // Default to requiring MFA
-        $extended_log = ''; // Default value
-
-        if (empty($token)) {
-            // MFA is not configured
-            $mfa_is_complete = true;
-        }
-
-        // Validate MFA via a remember-me cookie
-        if (isset($_COOKIE['rememberme'])) {
-            // Get remember tokens less than $config_login_remember_me_days_expire days old
-            $remember_tokens = mysqli_query($mysqli, "SELECT remember_token_token FROM remember_tokens WHERE remember_token_user_id = $user_id AND remember_token_created_at > (NOW() - INTERVAL $config_login_remember_me_expire DAY)");
-            while ($row = mysqli_fetch_assoc($remember_tokens)) {
-                if (hash_equals($row['remember_token_token'], $_COOKIE['rememberme'])) {
-                    $mfa_is_complete = true;
-                    $extended_log = 'with 2FA remember-me cookie';
-                    break;
-                }
-            }
-        }
-
-        // Validate MFA code
-        if (!empty($current_code) && TokenAuth6238::verify($token, $current_code)) {
-            $mfa_is_complete = true;
-            $extended_log = 'with MFA';
-        }
-
-        if ($mfa_is_complete) {
-            // MFA Completed successfully
-
-            // FULL LOGIN SUCCESS
-
-            // Create a remember me token, if requested
-            if (isset($_POST['remember_me'])) {
-                // TODO: Record the UA and IP a token is generated from so that can be shown later on
-                $newRememberToken = bin2hex(random_bytes(64));
-                setcookie('rememberme', $newRememberToken, time() + 86400*$config_login_remember_me_expire, "/", null, true, true);
-                mysqli_query($mysqli, "INSERT INTO remember_tokens SET remember_token_user_id = $user_id, remember_token_token = '$newRememberToken'");
-
-                $extended_log .= ", generated a new remember-me token";
-            }
-
-            // Check this login isn't suspicious
-            $sql_ip_prev_logins = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT(log_id) AS ip_previous_logins FROM logs WHERE log_type = 'Login' AND log_action = 'Success' AND log_ip = '$session_ip' AND log_user_id = $user_id"));
-            $ip_previous_logins = sanitizeInput($sql_ip_prev_logins['ip_previous_logins']);
-
-            $sql_ua_prev_logins = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT(log_id) AS ua_previous_logins FROM logs WHERE log_type = 'Login' AND log_action = 'Success' AND log_user_agent = '$session_user_agent' AND log_user_id = $user_id"));
-            $ua_prev_logins = sanitizeInput($sql_ua_prev_logins['ua_previous_logins']);
-
-            // Notify if both the user agent and IP are different
-            if (!empty($config_smtp_host) && $ip_previous_logins == 0 && $ua_prev_logins == 0) {
-                $subject = "$config_app_name new login for $user_name";
-                $body = "Hi $user_name, <br><br>A recent successful login to your $config_app_name account was considered a little unusual. If this was you, you can safely ignore this email!<br><br>IP Address: $session_ip<br> User Agent: $session_user_agent <br><br>If you did not perform this login, your credentials may be compromised. <br><br>Thanks, <br>ITFlow";
-
-                $data = [
-                    [
-                        'from' => $config_mail_from_email,
-                        'from_name' => $config_mail_from_name,
-                        'recipient' => $user_email,
-                        'recipient_name' => $user_name,
-                        'subject' => $subject,
-                        'body' => $body
-                    ]
-                ];
-                addToMailQueue($data);
-            }
-
-            // Logging
-            logAction("Login", "Success", "$user_name successfully logged in $extended_log", 0, $user_id);
-
-            // Session info
-            $_SESSION['user_id'] = $user_id;
-            $_SESSION['csrf_token'] = randomString(156);
-            $_SESSION['logged'] = true;
-
-            // Forcing MFA
-            if ($force_mfa == 1 && $token == NULL) {
-                $config_start_page = "mfa_enforcement.php";
-            }
-
-            // Setup encryption session key
-            if (isset($user_encryption_ciphertext)) {
-                $site_encryption_master_key = decryptUserSpecificKey($user_encryption_ciphertext, $password);
-                generateUserSessionKey($site_encryption_master_key);
-
-                // Setup extension - currently unused
-                //if (is_null($user_extension_key)) {
-                    // Extension cookie
-                    // Note: Browsers don't accept cookies with SameSite None if they are not HTTPS.
-                    //setcookie("user_extension_key", "$user_extension_key", ['path' => '/', 'secure' => true, 'httponly' => true, 'samesite' => 'None']);
-
-                    // Set PHP session in DB, so we can access the session encryption data (above)
-                    //$user_php_session = session_id();
-                    //mysqli_query($mysqli, "UPDATE users SET user_php_session = '$user_php_session' WHERE user_id = $user_id");
-                //}
-
-            }
-            if (isset($_GET['last_visited'])) {
-                header("Location: ".$_SERVER["REQUEST_SCHEME"] . "://" . $config_base_url . base64_decode($_GET['last_visited']) );
-            } else {
-                header("Location: $config_start_page");
-            }
-        } else {
-
-            // MFA is configured and needs to be confirmed, or was unsuccessful
-
-            // HTML code for the token input field
-            $token_field = "
-                    <div class='input-group mb-3'>
-                        <input type='text' inputmode='numeric' pattern='[0-9]*' maxlength='6' class='form-control' placeholder='Enter your 2FA code' name='current_code' required autofocus>
-                        <div class='input-group-append'>
-                          <div class='input-group-text'>
-                            <span class='fas fa-key'></span>
-                          </div>
-                        </div>
-                      </div>";
-
-            // Log/notify if MFA was unsuccessful
-            if ($current_code !== 0) {
-
-                // Logging
-                logAction("Login", "MFA Failed", "$user_name failed MFA", 0, $user_id);
-
-                // Email the tech to advise their credentials may be compromised
-                if (!empty($config_smtp_host)) {
-                    $subject = "Important: $config_app_name failed 2FA login attempt for $user_name";
-                    $body = "Hi $user_name, <br><br>A recent login to your $config_app_name account was unsuccessful due to an incorrect 2FA code. If you did not attempt this login, your credentials may be compromised. <br><br>Thanks, <br>ITFlow";
-                    $data = [
-                        [
-                            'from' => $config_mail_from_email,
-                            'from_name' => $config_mail_from_name,
-                            'recipient' => $user_email,
-                            'recipient_name' => $user_name,
-                            'subject' => $subject,
-                            'body' => $body
-                        ]
-                    ];
-                    $mail = addToMailQueue($data);
-                }
-
-                // HTML feedback for incorrect 2FA code
-                $response = "
-                      <div class='alert alert-warning'>
-                        Please Enter 2FA Code!
-                        <button class='close' data-dismiss='alert'>&times;</button>
-                      </div>";
-            }
-        }
-
-    } else {
-
-        // Password incorrect or user doesn't exist - show generic error
-
-        header("HTTP/1.1 401 Unauthorized");
-
-        // Logging
-        logAction("Login", "Failed", "Failed login attempt using $email");
-
+// The demo's sign-in buttons - each signs in as one of its accounts, through the same sign-in as
+// an email and password (functions/demo.php)
+if (demoModeOn() && $_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['demo_sign_in'])) {
+    $demo_email = demoModeSignInEmail((string) $_POST['demo_sign_in']);
+    if ($demo_email === null) {
         $response = "
+          <div class='alert alert-warning'>
+            That demo account isn't there right now - another visitor changed it. It's back after the nightly reset, so try another for now.
+          </div>";
+    } else {
+        $_POST['email'] = $demo_email;
+        $_POST['password'] = DEMO_MODE_PASSWORD;
+        $_POST['login'] = '';
+    }
+}
+
+// Helpers
+function pendingExpired($sess, $ttl_seconds = 120) {
+    return !$sess || empty($sess['created']) || (time() - intval($sess['created']) > $ttl_seconds);
+}
+
+// POST handling
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (isset($_POST['login']) || isset($_POST['role_choice']) || isset($_POST['mfa_login']))) {
+
+    $role_choice = $_POST['role_choice'] ?? null;
+
+    $is_login_step = isset($_POST['login']);
+    $is_role_step  = isset($_POST['role_choice']) && !$is_login_step && !isset($_POST['mfa_login']);
+    $is_mfa_step   = isset($_POST['mfa_login']);
+
+    // -----------------------------------
+    // STEP 2: ROLE CHOICE (no email/pass)
+    // -----------------------------------
+    if ($is_role_step) {
+
+        $posted_token = $_POST['pending_login_token'] ?? '';
+        $sess = $_SESSION['pending_dual_login'] ?? null;
+
+        if (pendingExpired($sess) || empty($posted_token) || empty($sess['token']) || !hash_equals($sess['token'], $posted_token)) {
+            unset($_SESSION['pending_dual_login']);
+            header("HTTP/1.1 401 Unauthorized");
+            $response = "
+              <div class='alert alert-danger'>
+                Your login session expired. Please sign in again.
+              </div>";
+        } else {
+            $email = escapeSql($sess['email'] ?? '');
+            $email_raw = (string) ($sess['email'] ?? '');
+        }
+    }
+
+    // -----------------------------------
+    // STEP 3: MFA SUBMIT (no email/pass)
+    // -----------------------------------
+    if ($is_mfa_step && empty($response)) {
+
+        $posted_token = $_POST['pending_mfa_token'] ?? '';
+        $sess = $_SESSION['pending_mfa_login'] ?? null;
+
+        if (pendingExpired($sess) || empty($posted_token) || empty($sess['token']) || !hash_equals($sess['token'], $posted_token)) {
+            unset($_SESSION['pending_mfa_login']);
+            header("HTTP/1.1 401 Unauthorized");
+            $response = "
+              <div class='alert alert-danger'>
+                Your MFA session expired. Please sign in again.
+              </div>";
+        } else {
+            $email = escapeSql($sess['email'] ?? '');
+            $email_raw = (string) ($sess['email'] ?? '');
+            // A client portal user's code, or an agent's
+            $role_choice = ($sess['type'] ?? 'agent') === 'client' ? 'client' : 'agent';
+        }
+    }
+
+    // -----------------------------------
+    // STEP 1: INITIAL CREDENTIALS
+    // -----------------------------------
+    if ($is_login_step && empty($response)) {
+        $email    = escapeSql($_POST['email'] ?? '');
+        $email_raw = trim((string) ($_POST['email'] ?? ''));
+        $password = $_POST['password'] ?? '';
+
+        if (empty($email) || empty($password) || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            header("HTTP/1.1 401 Unauthorized");
+            $response = "
               <div class='alert alert-danger'>
                 Incorrect username or password.
-                <button class='close' data-dismiss='alert'>&times;</button>
               </div>";
+        }
+    }
+
+    // Continue only if no response error
+    if (empty($response)) {
+
+        // Query all possible matches for that email
+        $sql = mysqli_query($mysqli, "
+            SELECT users.*,
+                   user_settings.*,
+                   contacts.*,
+                   clients.*
+            FROM users
+            LEFT JOIN user_settings ON users.user_id = user_settings.user_id
+            LEFT JOIN contacts       ON users.user_id = contacts.contact_user_id
+            LEFT JOIN clients        ON contacts.contact_client_id = clients.client_id
+            WHERE user_email = '$email'
+              AND user_archived_at IS NULL
+              AND user_status = 1
+              AND (
+                    user_type = 1
+                    OR (user_type = 2 AND client_archived_at IS NULL)
+                  )
+        ");
+
+        $agentRow  = null;
+        $clientRow = null;
+
+        // Step 1: verify password. Step 2/3: use stored allowed ids.
+        $allowed_agent_id  = null;
+        $allowed_client_id = null;
+
+        if ($is_role_step) {
+            $sess = $_SESSION['pending_dual_login'] ?? null;
+            $allowed_agent_id  = isset($sess['agent_user_id']) ? intval($sess['agent_user_id']) : null;
+            $allowed_client_id = isset($sess['client_user_id']) ? intval($sess['client_user_id']) : null;
+        }
+
+        if ($is_mfa_step) {
+            $sess = $_SESSION['pending_mfa_login'] ?? null;
+            // Only the account whose password was checked - the other kind is left out altogether (-1 matches no one)
+            if (($sess['type'] ?? 'agent') === 'client') {
+                $allowed_client_id = intval($sess['client_user_id'] ?? 0);
+                $allowed_agent_id = -1;
+            } else {
+                $allowed_agent_id = isset($sess['agent_user_id']) ? intval($sess['agent_user_id']) : null;
+                $allowed_client_id = -1;
+            }
+        }
+
+        while ($r = mysqli_fetch_assoc($sql)) {
+
+            $ut = intval($r['user_type']);
+
+            if ($is_login_step) {
+                // Only Step 1 checks password
+                if (!password_verify($password, $r['user_password'])) {
+                    continue;
+                }
+            } else {
+                // Step 2/3: restrict to ids we previously verified
+                if ($ut === 1 && $allowed_agent_id !== null && intval($r['user_id']) !== $allowed_agent_id) {
+                    continue;
+                }
+                // A client's users.user_id can come back NULL from the user_settings join (they have
+                // no row there) - contact_user_id is theirs
+                if ($ut === 2 && $allowed_client_id !== null && (intval($r['contact_user_id'] ?? 0) ?: intval($r['user_id'] ?? 0)) !== $allowed_client_id) {
+                    continue;
+                }
+            }
+
+            if ($ut === 1 && $agentRow === null) {
+                $agentRow = $r;
+            }
+            if ($ut === 2 && $clientRow === null) {
+                $clientRow = $r;
+            }
+        }
+
+        if ($agentRow === null && $clientRow === null) {
+            header("HTTP/1.1 401 Unauthorized");
+
+            // Why, and whose account it was - so it counts against the account too
+            $failed_why = signInFailureReason($email_raw ?? '');
+            signInLogFailure($failed_why['type'], 'Failed', escapeSql('Failed sign in as ' . ($email_raw ?? '') . ' - ' . $failed_why['reason']), $failed_why['user_id'], $failed_why['client_id']);
+
+            $response = "
+              <div class='alert alert-danger'>
+                Incorrect username or password.
+              </div>";
+        } else {
+
+            $selectedRow  = null;
+            $selectedType = null; // 1 agent, 2 client
+
+            // Dual role
+            if ($agentRow !== null && $clientRow !== null) {
+
+                if ($role_choice === 'agent') {
+                    $selectedRow  = $agentRow;
+                    $selectedType = 1;
+                } elseif ($role_choice === 'client') {
+                    $selectedRow  = $clientRow;
+                    $selectedType = 2;
+                } else {
+                    // Show role choice screen
+                    $show_role_choice = true;
+
+                    // If this is the first time (Step 1), we need to stash allowed ids and (optional) decrypted agent encryption key
+                    // WITHOUT storing password.
+                    if ($is_login_step) {
+
+                        $pending_token = bin2hex(random_bytes(32));
+
+                        // If agent has user-specific encryption ciphertext, decrypt it NOW while password is present.
+                        $agent_master_key = null;
+                        $agent_cipher = $agentRow['user_specific_encryption_ciphertext'] ?? null;
+                        if (!empty($agent_cipher)) {
+                            $agent_master_key = decryptUserSpecificKey($agent_cipher, $password);
+                        }
+
+                        $_SESSION['pending_dual_login'] = [
+                            'email'            => $email,
+                            'agent_user_id'    => intval($agentRow['user_id']),
+                            'client_user_id'   => intval($clientRow['contact_user_id'] ?? 0) ?: intval($clientRow['user_id'] ?? 0),
+                            'agent_master_key' => $agent_master_key, // may be null
+                            'token'            => $pending_token,
+                            'created'          => time()
+                        ];
+                    }
+                }
+
+            } else {
+                // Single role
+                if ($agentRow !== null) {
+                    $selectedRow  = $agentRow;
+                    $selectedType = 1;
+                } else {
+                    $selectedRow  = $clientRow;
+                    $selectedType = 2;
+                }
+            }
+
+            // Proceed if selected
+            if ($selectedRow !== null && $selectedType !== null) {
+
+                // Cache pending sessions BEFORE unsetting anything (needed for role->MFA and MFA success)
+                $pending_dual = $_SESSION['pending_dual_login'] ?? null;
+                $pending_mfa  = $_SESSION['pending_mfa_login'] ?? null;
+
+                // NOTE: do NOT unset pending_dual_login here anymore; we may still need agent_master_key for MFA or role-step agent login
+
+                $user_id    = intval($selectedRow['user_id']);
+                $user_email = escapeSql($selectedRow['user_email']);
+
+                // =========================
+                // AGENT FLOW
+                // =========================
+                if ($selectedType === 1) {
+
+                    if ($config_login_key_required) {
+                        if (!isset($_GET['key']) || $_GET['key'] !== $config_login_key_secret) {
+                            redirect();
+                        }
+                    }
+
+                    $user_name                  = escapeSql($selectedRow['user_name']);
+                    $token                      = escapeSql($selectedRow['user_token']);
+                    $force_mfa                  = intval($selectedRow['user_config_force_mfa']);
+                    $user_encryption_ciphertext = $selectedRow['user_specific_encryption_ciphertext'];
+
+                    $current_code = 0;
+                    if (isset($_POST['current_code'])) {
+                        $current_code = intval($_POST['current_code']);
+                    }
+
+                    // Per-account limit on second factor attempts. The IP lockout at the
+                    // top of this file can be spread across hosts, and anything reaching
+                    // this point has already cleared the password, so the second factor
+                    // needs a limit tied to the account rather than the source address.
+                    // Only a request that passed the password check can add to this
+                    // counter, so it cannot be used to lock another user out.
+                    $mfa_locked = false;
+                    if (!empty($current_code)) {
+
+                        // This counter needs its own lock. The IP lock above does not
+                        // serialize a burst spread across hosts, and a burst spread
+                        // across hosts is the exact case this per-account limit exists
+                        // for. Keyed on the account, released with the request.
+                        $mfa_lock_name = "itflow_login_mfa_$user_id";
+                        $mfa_lock = mysqli_fetch_row(mysqli_query($mysqli, "SELECT GET_LOCK('$mfa_lock_name', 10)"));
+
+                        if (empty($mfa_lock[0])) {
+                            error_log("ITFlow: timed out waiting on the MFA rate limit lock for user $user_id, proceeding unserialized");
+                        }
+
+                        $row_mfa = mysqli_fetch_assoc(mysqli_query(
+                            $mysqli,
+                            "SELECT COUNT(log_id) AS failed_mfa_count
+                             FROM logs
+                             WHERE log_user_id = $user_id
+                               AND log_type = 'Login'
+                               AND log_action = 'MFA Failed'
+                               AND log_created_at > (NOW() - INTERVAL 10 MINUTE)"
+                        ));
+                        $mfa_locked = intval($row_mfa['failed_mfa_count']) >= 5;
+                    }
+
+                    $mfa_is_complete = false;
+                    $extended_log    = '';
+
+                    if (empty($token)) {
+                        $mfa_is_complete = true; // no MFA configured
+                    }
+
+                    // remember-me cookie allows bypass
+                    if (isset($_COOKIE['rememberme'])) {
+                        $remember_tokens = mysqli_query($mysqli, "
+                            SELECT remember_token_token
+                            FROM remember_tokens
+                            WHERE remember_token_user_id = $user_id
+                              AND remember_token_created_at > (NOW() - INTERVAL $config_login_remember_me_expire DAY)
+                        ");
+                        while ($remember_row = mysqli_fetch_assoc($remember_tokens)) {
+                            if (hash_equals($remember_row['remember_token_token'], $_COOKIE['rememberme'])) {
+                                $mfa_is_complete = true;
+                                $extended_log    = 'with 2FA remember-me cookie';
+                                break;
+                            }
+                        }
+                    }
+
+                    // Validate MFA code
+                    if (!$mfa_locked && !empty($current_code) && TokenAuth6238::verify($token, $current_code, 1)) {
+                        $mfa_is_complete = true;
+                        $extended_log    = 'with MFA';
+                    }
+
+                    if ($mfa_is_complete) {
+
+                        // Remember me token creation
+                        if (isset($_POST['remember_me'])) {
+                            $newRememberToken = bin2hex(random_bytes(64));
+                            setcookie('rememberme', $newRememberToken, time() + 86400 * $config_login_remember_me_expire, "/", null, true, true);
+
+                            mysqli_query($mysqli, "
+                                INSERT INTO remember_tokens
+                                SET remember_token_user_id = $user_id,
+                                    remember_token_token   = '$newRememberToken'
+                            ");
+                            $extended_log .= ", generated a new remember-me token";
+                        }
+
+                        // Suspicious login checks / email notify
+                        $sql_ip_prev_logins = mysqli_fetch_assoc(mysqli_query($mysqli, "
+                            SELECT COUNT(log_id) AS ip_previous_logins
+                            FROM logs
+                            WHERE log_type = 'Login'
+                              AND log_action = 'Success'
+                              AND log_ip = '$session_ip'
+                              AND log_user_id = $user_id
+                        "));
+                        $ip_previous_logins = escapeSql($sql_ip_prev_logins['ip_previous_logins']);
+
+                        $sql_ua_prev_logins = mysqli_fetch_assoc(mysqli_query($mysqli, "
+                            SELECT COUNT(log_id) AS ua_previous_logins
+                            FROM logs
+                            WHERE log_type = 'Login'
+                              AND log_action = 'Success'
+                              AND log_user_agent = '$session_user_agent'
+                              AND log_user_id = $user_id
+                        "));
+                        $ua_prev_logins = escapeSql($sql_ua_prev_logins['ua_previous_logins']);
+
+                        // Not in the demo, where everyone signs in from somewhere new (functions/demo.php)
+                        if ($ip_previous_logins == 0 && $ua_prev_logins == 0 && !demoModeOn()) {
+                            userMailSignInAlert($selectedRow['user_name'], $selectedRow['user_email'], 'new', getIP(), $_SERVER['HTTP_USER_AGENT'] ?? '');
+                        }
+
+                        // Option B: set session_user_id BEFORE logAudit()
+                        $session_user_id = $user_id;
+                        logAudit("Login", "Success", "$user_name successfully logged in $extended_log", 0, $user_id);
+
+                        // New session ID for the authenticated session (CWE-384)
+                        session_regenerate_id(true);
+
+                        $_SESSION['user_id']    = $user_id;
+                        $_SESSION['csrf_token'] = randomString(32);
+                        $_SESSION['logged']     = true;
+                        // A later password change ends this session (userSessionStamp())
+                        $_SESSION['user_session_stamp'] = userSessionStamp($selectedRow['user_password'] ?? '');
+
+                        if ($force_mfa == 1 && $token == NULL) {
+                            $config_start_page = "user/mfa_enforcement.php";
+                        }
+
+                        // Setup encryption session key WITHOUT PASSWORD IN SESSION
+                        $site_encryption_master_key = null;
+
+                        if ($is_mfa_step) {
+                            // Step 3: MFA submit
+                            $sess = $pending_mfa ?? ($_SESSION['pending_mfa_login'] ?? null);
+                            if ($sess && !empty($sess['agent_master_key'])) {
+                                $site_encryption_master_key = $sess['agent_master_key'];
+                            }
+
+                        } elseif ($is_role_step) {
+                            // Step 2: role choice (no password available)
+                            $sess = $pending_dual ?? ($_SESSION['pending_dual_login'] ?? null);
+                            if ($sess && !empty($sess['agent_master_key'])) {
+                                $site_encryption_master_key = $sess['agent_master_key'];
+                            }
+
+                        } else {
+                            // Step 1: initial login (password available in this request)
+                            if (!empty($user_encryption_ciphertext)) {
+                                $site_encryption_master_key = decryptUserSpecificKey($user_encryption_ciphertext, $password);
+                            }
+                        }
+
+                        if (!empty($site_encryption_master_key)) {
+                            generateUserSessionKey($site_encryption_master_key);
+                        }
+
+                        // NOW safe to clear pending sessions AFTER we used them
+                        unset($_SESSION['pending_mfa_login']);
+                        unset($_SESSION['pending_dual_login']);
+
+                        // A new install's first admin is walked through what is left to set up, once (functions/getting_started.php) -
+                        // after MFA enforcement, and not instead of a page they were on their way to
+                        if (!($force_mfa == 1 && $token == NULL) && !isset($_GET['last_visited']) && gettingStartedFirstVisit($user_id)) {
+                            redirect('admin/getting_started.php');
+                        }
+
+                        // Redirect
+                        if (isset($_GET['last_visited']) && (str_starts_with(base64_decode($_GET['last_visited']), '/agent') || str_starts_with(base64_decode($_GET['last_visited']), '/admin'))) {
+                            redirect($_SERVER["REQUEST_SCHEME"] . "://" . $config_base_url . base64_decode($_GET['last_visited']));
+                        } else {
+                            redirect("agent/$config_start_page");
+                        }
+
+                    } else {
+
+                        // MFA required — store *only what we need*, not password
+                        $pending_mfa_token = bin2hex(random_bytes(32));
+
+                        // If we arrived here from role-choice step, the agent master key may be in cached pending_dual
+                        // If we arrived from initial login step, decrypt now (password in memory) and store master key.
+                        $agent_master_key = null;
+
+                        if ($is_role_step) {
+                            $sess = $pending_dual ?? ($_SESSION['pending_dual_login'] ?? null);
+                            if ($sess && array_key_exists('agent_master_key', $sess)) {
+                                $agent_master_key = $sess['agent_master_key'];
+                            }
+                        } else {
+                            if (!empty($user_encryption_ciphertext)) {
+                                $agent_master_key = decryptUserSpecificKey($user_encryption_ciphertext, $password);
+                            }
+                        }
+
+                        $_SESSION['pending_mfa_login'] = [
+                            'email'            => $user_email,
+                            'agent_user_id'    => $user_id,
+                            'agent_master_key' => $agent_master_key, // may be null
+                            'token'            => $pending_mfa_token,
+                            // Keep the original issue time on a retry so the pending
+                            // window actually expires, instead of being pushed forward
+                            // by every wrong code.
+                            'created'          => ($is_mfa_step && !empty($pending_mfa['created']))
+                                                    ? intval($pending_mfa['created'])
+                                                    : time()
+                        ];
+
+                        // Now that we've transferred what we need, it's safe to clear the dual-role pending session.
+                        unset($_SESSION['pending_dual_login']);
+
+                        $token_field = "
+                            <div class='input-group mb-3'>
+                                <input type='text' inputmode='numeric' pattern='[0-9]*' maxlength='6'
+                                       class='form-control' placeholder='Verify your 2FA code'
+                                       name='current_code' required autofocus>
+                                  <div class='input-group-text'>
+                                    <span class='fas fa-key'></span>
+                                  </div>
+                            </div>";
+
+                        if ($mfa_locked) {
+
+                            // No log row and no email while locked out. Both are
+                            // per-request writes the attacker controls, and logging here
+                            // would keep pushing the 10 minute window forward so the
+                            // lockout could never clear. The MFA Failed rows that
+                            // triggered it are already the audit trail.
+                            header("HTTP/1.1 429 Too Many Requests");
+
+                            $response = "
+                                  <div class='alert alert-danger'>
+                                    Too many incorrect 2FA codes. Please wait 10 minutes and sign in again.
+                                  </div>";
+
+                        } elseif ($current_code !== 0) {
+
+                            signInLogFailure('Login', 'MFA Failed', "$user_email entered a wrong MFA code - the password was right", $user_id);
+
+                            userMailSignInAlert($selectedRow['user_name'], $selectedRow['user_email'], 'mfa', getIP(), $_SERVER['HTTP_USER_AGENT'] ?? '');
+
+                            $response = "
+                                  <div class='alert alert-danger'>
+                                    Please enter a valid 2FA code.
+                                  </div>";
+                        }
+                    }
+
+                // =========================
+                // CLIENT FLOW
+                // =========================
+                } elseif ($selectedType === 2) {
+
+                    if ($config_client_portal_enable != 1) {
+                        header("HTTP/1.1 401 Unauthorized");
+
+                        $failed_user_id = intval($selectedRow['contact_user_id'] ?? 0) ?: intval($selectedRow['user_id'] ?? 0);
+                        signInLogFailure('Client Login', 'Failed', "Failed sign in as $email - the client portal is turned off", $failed_user_id, intval($selectedRow['contact_client_id'] ?? 0));
+
+                        $response = "
+                          <div class='alert alert-danger'>
+                            Incorrect username or password.
+                          </div>";
+                    } else {
+
+                        // Client login user id can be clobbered by SELECT users.*, contacts.*, clients.* collisions.
+                        // Prefer contact_user_id (ties to the portal user), fallback to user_id if present.
+                        $user_id = intval($selectedRow['contact_user_id'] ?? 0);
+                        if ($user_id === 0) {
+                            $user_id = intval($selectedRow['user_id'] ?? 0);
+                        }
+
+                        $client_id        = intval($selectedRow['contact_client_id'] ?? 0);
+                        $contact_id       = intval($selectedRow['contact_id'] ?? 0);
+                        $user_auth_method = escapeSql($selectedRow['user_auth_method'] ?? '');
+
+                        // Two-step sign-in, when the contact turned it on (functions/portal.php):
+                        // a remembered browser, or a code from their app. Wrong codes are
+                        // counted per account, as an agent's are.
+                        $client_mfa_secret = trim((string) ($selectedRow['user_token'] ?? ''));
+                        $client_mfa_done = $client_mfa_secret === '';
+                        $client_mfa_how = '';
+                        $client_mfa_locked = false;
+                        $client_code = preg_replace('/\s+/', '', (string) ($_POST['current_code'] ?? ''));
+                        if (!preg_match('/^[0-9]{6}$/', $client_code)) {
+                            $client_code = '';
+                        }
+                        if ($client_id && $contact_id && $user_auth_method === 'local' && !$client_mfa_done) {
+                            if (isset($_COOKIE['rememberme'])) {
+                                $remember_tokens = mysqli_query($mysqli, "SELECT remember_token_token FROM remember_tokens
+                                    WHERE remember_token_user_id = $user_id AND remember_token_created_at > (NOW() - INTERVAL $config_login_remember_me_expire DAY)");
+                                while ($remember_row = mysqli_fetch_assoc($remember_tokens)) {
+                                    if (hash_equals($remember_row['remember_token_token'], (string) $_COOKIE['rememberme'])) {
+                                        $client_mfa_done = true;
+                                        $client_mfa_how = ' with a remembered browser';
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!$client_mfa_done && $client_code !== '') {
+                                $mfa_lock = mysqli_fetch_row(mysqli_query($mysqli, "SELECT GET_LOCK('itflow_login_mfa_$user_id', 10)"));
+                                if (empty($mfa_lock[0])) {
+                                    error_log("ITFlow: timed out waiting on the MFA rate limit lock for user $user_id, proceeding unserialized");
+                                }
+                                $client_mfa_locked = intval(mysqli_fetch_row(mysqli_query($mysqli, "SELECT COUNT(log_id) FROM logs
+                                    WHERE log_user_id = $user_id AND log_type = 'Client Login' AND log_action = 'MFA Failed'
+                                      AND log_created_at > (NOW() - INTERVAL 10 MINUTE)"))[0]) >= 5;
+                                if (!$client_mfa_locked && TokenAuth6238::verify($client_mfa_secret, $client_code, 1)) {
+                                    $client_mfa_done = true;
+                                    $client_mfa_how = ' with two-step sign-in';
+                                }
+                            }
+                        }
+
+                        if ($client_id && $contact_id && $user_auth_method === 'local' && !$client_mfa_done) {
+
+                            // Ask for the code - keeping only who it is for, never the password
+                            $pending_mfa_token = bin2hex(random_bytes(32));
+                            $_SESSION['pending_mfa_login'] = [
+                                'type'           => 'client',
+                                'email'          => $user_email,
+                                'client_user_id' => $user_id,
+                                'token'          => $pending_mfa_token,
+                                'created'        => ($is_mfa_step && !empty($pending_mfa['created'])) ? intval($pending_mfa['created']) : time(),
+                            ];
+                            unset($_SESSION['pending_dual_login']);
+
+                            $token_field = "
+                                <p class='small text-body-secondary mb-2'>Enter the 6-digit code from your authenticator app.</p>
+                                <div class='input-group mb-3'>
+                                    <span class='input-group-text'><span class='fas fa-fw fa-mobile-alt'></span></span>
+                                    <input type='text' inputmode='numeric' pattern='[0-9]{6}' maxlength='6' minlength='6'
+                                           class='form-control' placeholder='6-digit code' aria-label='6-digit code'
+                                           name='current_code' autocomplete='one-time-code' required autofocus>
+                                </div>";
+
+                            if ($client_mfa_locked) {
+                                // As for agents: no log row while locked, so the window can run out
+                                header("HTTP/1.1 429 Too Many Requests");
+                                $response = "<div class='alert alert-danger'>Too many wrong codes. Wait 10 minutes and sign in again.</div>";
+                            } elseif ($client_code !== '' || isset($_POST['current_code'])) {
+                                signInLogFailure('Client Login', 'MFA Failed', "Client contact $user_email entered a wrong two-step sign-in code - the password was right", $user_id, $client_id);
+                                $response = "<div class='alert alert-danger'>That code is not right - try the newest one in your app.</div>";
+                            }
+
+                        } elseif ($client_id && $contact_id && $user_auth_method === 'local') {
+
+                            // Remember this browser for two-step sign-in, when asked
+                            if ($client_mfa_secret !== '' && isset($_POST['remember_me']) && $is_mfa_step) {
+                                $newRememberToken = bin2hex(random_bytes(64));
+                                setcookie('rememberme', $newRememberToken, time() + 86400 * $config_login_remember_me_expire, "/", null, true, true);
+                                mysqli_query($mysqli, "INSERT INTO remember_tokens SET remember_token_user_id = $user_id, remember_token_token = '$newRememberToken'");
+                                $client_mfa_how .= ', remembering this browser';
+                            }
+
+                            // New session ID for the authenticated session (CWE-384)
+                            session_regenerate_id(true);
+
+                            $_SESSION['client_logged_in'] = true;
+                            $_SESSION['client_id']        = $client_id;
+                            $_SESSION['user_id']          = $user_id;
+                            $_SESSION['user_type']        = 2;
+                            $_SESSION['contact_id']       = $contact_id;
+                            $_SESSION['login_method']     = "local";
+                            // A later password change ends this session (userSessionStamp())
+                            $_SESSION['user_session_stamp'] = userSessionStamp($selectedRow['user_password'] ?? '');
+
+                            // Keep consistent with agent flow (helps any shared session checks)
+                            $_SESSION['logged']     = true;
+                            $_SESSION['csrf_token'] = randomString(32);
+
+                            // Option B: set session_user_id BEFORE logAudit()
+                            $session_user_id = $user_id;
+                            logAudit("Client Login", "Success", "Client contact $user_email successfully logged in locally$client_mfa_how", $client_id, $user_id);
+
+                            // Clear any pending sessions (avoid stale dual-role/MFA state), and an agent's View as contact
+                            unset($_SESSION['pending_dual_login']);
+                            unset($_SESSION['pending_mfa_login']);
+                            unset($_SESSION['portal_view_as']);
+
+                            header("Location: client/index.php");
+                            exit();
+
+                        } else {
+
+                            // The account is there, but can't sign in here with a password
+                            signInLogFailure('Client Login', 'Failed', "Failed sign in as $email - " . ($user_auth_method === 'azure' ? 'the account signs in with Microsoft 365' : 'the account has no contact or client'), $user_id, $client_id ?? 0);
+
+                            header("HTTP/1.1 401 Unauthorized");
+                            $response = "
+                              <div class='alert alert-danger'>
+                                Incorrect username or password.
+                              </div>";
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
-?>
+// Form state
+$show_mfa_form   = (isset($token_field) && !empty($token_field));
+$show_login_form = (!$show_role_choice && !$show_mfa_form);
 
+?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-bs-theme="light" data-lte-color-mode="off">
 <head>
     <meta charset="utf-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title><?php echo nullable_htmlentities($company_name); ?> | Login</title>
-    <!-- Tell the browser to be responsive to screen width -->
+    <title><?= escapeHtml($company_name) ?> | Login</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="robots" content="noindex">
 
-    <!-- Font Awesome -->
-    <link rel="stylesheet" href="plugins/fontawesome-free/css/all.min.css">
+    <link rel="stylesheet" href="libs/fontawesome-free/css/all.min.css">
 
-    <!--
-    Favicon
-    If Fav Icon exists else use the default one
-    -->
     <?php if(file_exists('uploads/favicon.ico')) { ?>
         <link rel="icon" type="image/x-icon" href="/uploads/favicon.ico">
     <?php } ?>
 
-    <!-- Theme style -->
-    <link rel="stylesheet" href="plugins/adminlte/css/adminlte.min.css">
-
+    <link rel="stylesheet" href="libs/adminlte/css/adminlte.min.css">
+    <link rel="stylesheet" href="css/itflow_custom.css">
 </head>
 <body class="hold-transition login-page">
 
 <div class="login-box">
     <div class="login-logo">
         <?php if (!empty($company_logo)) { ?>
-            <img alt="<?=nullable_htmlentities($company_name)?> logo" height="110" width="380" class="img-fluid" src="<?php echo "uploads/settings/$company_logo"; ?>">
+            <img alt="<?=escapeHtml($company_name)?> logo" height="110" width="380" class="img-fluid" src="<?= "uploads/settings/$company_logo" ?>">
         <?php } else { ?>
-            <span class="text-primary text-bold"><i class="fas fa-paper-plane mr-2"></i>IT</span>Flow
+            <span class="text-primary text-bold"><i class="fas fa-paper-plane me-2"></i>IT</span>Flow
         <?php } ?>
     </div>
 
-    <!-- /.login-logo -->
     <div class="card">
         <div class="card-body login-card-body">
 
             <?php if (!empty($config_login_message)){ ?>
-            <p class="login-box-msg px-0"><?php echo nl2br($config_login_message); ?></p>
+                <p class="login-box-msg px-0"><?= nl2br($config_login_message) ?></p>
+            <?php } ?>
+
+            <?php if (!empty($_SESSION['login_message'])) { ?>
+                <div class="alert alert-<?= ($_SESSION['login_message_type'] ?? '') === 'success' ? 'success' : 'danger' ?>"><?= escapeHtml($_SESSION['login_message']) ?></div>
+                <?php unset($_SESSION['login_message'], $_SESSION['login_message_type']); ?>
             <?php } ?>
 
             <?php if (isset($response)) { ?>
-            <p><?php echo $response; ?></p>
+                <p><?= $response ?></p>
+            <?php } ?>
+
+            <?php if ($show_login_form && demoModeOn()) {
+                $demo_portal = $config_client_portal_enable == 1 ? demoModePortalContact() : null; ?>
+                <!-- The demo - a button for each of its accounts (functions/demo.php) -->
+                <div data-demo-sign-in>
+                    <p class="fw-semibold mb-2">Try the demo - sign in as</p>
+                    <form method="post" class="row g-2 mb-2">
+                        <?php foreach (DEMO_MODE_ACCOUNTS as $demo_account => $demo_details) { ?>
+                            <div class="col-6">
+                                <button type="submit" class="btn btn-outline-primary w-100" name="demo_sign_in" value="<?= escapeHtml($demo_account) ?>">
+                                    <i class="fas fa-fw <?= escapeHtml($demo_details['icon']) ?> me-1"></i><?= escapeHtml($demo_details['label']) ?>
+                                </button>
+                            </div>
+                        <?php } ?>
+                        <?php if ($demo_portal) { ?>
+                            <div class="col-6">
+                                <button type="submit" class="btn btn-outline-secondary w-100" name="demo_sign_in" value="portal">
+                                    <i class="fas fa-fw fa-user me-1"></i>Client portal
+                                </button>
+                            </div>
+                        <?php } ?>
+                    </form>
+                    <p class="small text-body-secondary mb-0">
+                        <?php if ($demo_portal) { ?>
+                            Client portal signs in as <?= escapeHtml($demo_portal['name']) ?> at <?= escapeHtml($demo_portal['client']) ?>.
+                        <?php } ?>
+                        Anyone can sign in, so don't put anything real in it - it goes back to fresh demo data every night.
+                    </p>
+                    <div class="d-flex align-items-center gap-2 my-3 small text-body-secondary">
+                        <hr class="flex-grow-1 my-0"><span>or with an email</span><hr class="flex-grow-1 my-0">
+                    </div>
+                </div>
             <?php } ?>
 
             <form method="post">
 
-                <div class="input-group mb-3" <?php if (isset($token_field)) { echo "hidden"; } ?>>
-                    <input type="text" class="form-control" placeholder="Agent Email" name="email" value="<?php if (isset($token_field)) { echo $email; }?>" required <?php if (!isset($token_field)) { echo "autofocus"; } ?> >
-                    <div class="input-group-append">
-                        <div class="input-group-text">
-                            <span class="fas fa-envelope"></span>
+                <?php if ($show_login_form): ?>
+                    <!-- STEP 1: Email + Password -->
+                    <div class="input-group mb-3">
+                        <input type="email" class="form-control"
+                            placeholder="<?php if ($config_login_key_required) { if (!isset($_GET['key']) || $_GET['key'] !== $config_login_key_secret) { echo "Client "; } } echo "Email"; ?>"
+                            name="email"
+                            value="<?= htmlspecialchars($email ?? '', ENT_QUOTES) ?>"
+                            required autofocus
+                        >
+                            <div class="input-group-text">
+                                <span class="fas fa-envelope"></span>
+                            </div>
+                    </div>
+
+                    <div class="input-group mb-3">
+                        <input type="password" class="form-control" placeholder="Password" name="password" required>
+                            <div class="input-group-text">
+                                <span class="fas fa-lock"></span>
+                            </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary w-100 mb-3" name="login">Sign In</button>
+                <?php endif; ?>
+
+                <?php if ($show_role_choice): ?>
+                    <!-- STEP 2: Role choice only -->
+                    <input type="hidden" name="pending_login_token"
+                           value="<?= htmlspecialchars($_SESSION['pending_dual_login']['token'] ?? '', ENT_QUOTES) ?>">
+
+                    <div class="mb-2 text-center">
+                        <button type="submit" class="btn btn-dark w-100 mb-2" name="role_choice" value="agent">
+                            Log in as Agent
+                        </button>
+                        <button type="submit" class="btn btn-light w-100" name="role_choice" value="client">
+                            Log in as Client
+                        </button>
+                    </div>
+                <?php endif; ?>
+
+                <?php if ($show_mfa_form): ?>
+                    <!-- STEP 3: MFA only -->
+                    <?= $token_field ?>
+
+                    <input type="hidden" name="pending_mfa_token"
+                           value="<?= htmlspecialchars($_SESSION['pending_mfa_login']['token'] ?? '', ENT_QUOTES) ?>">
+
+                    <div class="mb-3 mb-3">
+                        <div class="form-check">
+                            <input type="checkbox" class="form-check-input" id="remember_me" name="remember_me">
+                            <label class="form-check-label" for="remember_me">Remember this browser for <?= $config_login_remember_me_expire ?> day<?= $config_login_remember_me_expire === 1 ? '' : 's' ?></label>
                         </div>
                     </div>
-                </div>
-                <div class="input-group mb-3" <?php if (isset($token_field)) { echo "hidden"; } ?>>
-                    <input type="password" class="form-control" placeholder="Agent Password" name="password" value="<?php if (isset($token_field)) { echo $password; } ?>" required>
-                    <div class="input-group-append">
-                        <div class="input-group-text">
-                            <span class="fas fa-lock"></span>
-                        </div>
-                    </div>
-                </div>
 
-                <?php
-                if (isset($token_field)) {
-
-                    echo $token_field;
-                ?>
-
-                <div class="form-group mb-3">
-                    <div class="custom-control custom-checkbox">
-                        <input type="checkbox" class="custom-control-input" id="remember_me" name="remember_me">
-                        <label class="custom-control-label" for="remember_me">Remember Me</label>
-                    </div>
-                </div>
-
-                <?php
-
-                }
-
-                ?>
-
-                <button type="submit" class="btn btn-primary btn-block mb-3" name="login">Sign In</button>
-
-                <?php if($config_client_portal_enable == 1){ ?>
-                    <hr>
-                    <h5 class="text-center">Looking for the <a href="client">Client Portal?<a/></h5>
-                <?php } ?>
+                    <button type="submit" class="btn btn-dark w-100 mb-3" name="mfa_login">Verify & Sign In</button>
+                <?php endif; ?>
 
             </form>
 
+            <?php if($config_client_portal_enable == 1){ ?>
+                <hr>
+                <div class="d-flex flex-wrap justify-content-between gap-2">
+                    <?php if (!empty($config_smtp_provider)) { ?>
+                        <a href="client/login_reset.php">Forgot password?</a>
+                    <?php } ?>
+                    <?php if (portalSignupOpen()) { ?>
+                        <!-- People at a client that lets them can make their own portal account (functions/portal_invite.php) -->
+                        <a href="client/signup.php" data-login-signup><i class="fas fa-user-plus me-1"></i>Create an account</a>
+                    <?php } ?>
+                </div>
+                <?php if (!empty($azure_client_id)) { ?>
+                    <div class="col text-center mt-2">
+                        <a href="client/login_microsoft.php">
+                            <button type="button" class="btn btn-secondary">Login with Microsoft Entra</button>
+                        </a>
+                    </div>
+                <?php } ?>
+            <?php } ?>
+
         </div>
-        <!-- /.login-card-body -->
     </div>
 </div>
-<!-- /.login-box -->
 
-<!-- jQuery -->
-<script src="plugins/jquery/jquery.min.js"></script>
+<?php
+if (!$config_whitelabel_enabled) {
+    echo '<small class="text-muted">Powered by ITFlow</small>';
+}
+?>
 
-<!-- Bootstrap 4 -->
-<script src="plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
-
-<!-- AdminLTE App -->
-<script src="plugins/adminlte/js/adminlte.min.js"></script>
-
-<!-- <script src="plugins/Show-Hide-Passwords-Bootstrap-4/bootstrap-show-password.min.js"></script> -->
-
-<!-- Prevents resubmit on refresh or back -->
+<script src="libs/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="libs/adminlte/js/adminlte.min.js"></script>
 <script src="js/login_prevent_resubmit.js"></script>
 
 </body>

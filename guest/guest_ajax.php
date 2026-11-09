@@ -11,7 +11,6 @@ require_once "../config.php";
 // Set Timezone
 require_once "../includes/inc_set_timezone.php";
 require_once "../functions.php";
-require_once "../plugins/totp/totp.php";
 
 
 /*
@@ -20,49 +19,41 @@ require_once "../plugins/totp/totp.php";
 
 if (isset($_GET['stripe_create_pi'])) {
 
-    // Response header
     header('Content-Type: application/json');
 
     // Params from POST (guest_pay_invoice_stripe.js)
     $jsonStr = file_get_contents('php://input');
     $jsonObj = json_decode($jsonStr, true);
     $invoice_id = intval($jsonObj['invoice_id']);
-    $url_key = sanitizeInput($jsonObj['url_key']);
+    $url_key = escapeSql($jsonObj['url_key']);
 
     // Query invoice details
     $invoice_sql = mysqli_query(
         $mysqli,
-        "SELECT * FROM invoices
+        "SELECT client_id, client_name, invoice_amount, invoice_currency_code, invoice_number,
+            invoice_prefix FROM invoices
         LEFT JOIN clients ON invoice_client_id = client_id
         WHERE invoice_id = $invoice_id
         AND invoice_url_key = '$url_key'
-        AND invoice_status != 'Draft'
-        AND invoice_status != 'Paid'
-        AND invoice_status != 'Cancelled'
+        AND invoice_status NOT IN ('Draft','Paid','Cancelled')
         LIMIT 1"
     );
     if (!$invoice_sql || mysqli_num_rows($invoice_sql) !== 1) {
         exit("Invalid Invoice ID/SQL query");
     }
 
-    // Invoice exists - get details for payment
-    $row = mysqli_fetch_array($invoice_sql);
-    $invoice_prefix = nullable_htmlentities($row['invoice_prefix']);
+    $row = mysqli_fetch_assoc($invoice_sql);
+    $invoice_prefix = escapeHtml($row['invoice_prefix']);
     $invoice_number = intval($row['invoice_number']);
     $invoice_amount = floatval($row['invoice_amount']);
-    $invoice_currency_code = nullable_htmlentities($row['invoice_currency_code']);
+    $invoice_currency_code = escapeHtml($row['invoice_currency_code']);
     $client_id = intval($row['client_id']);
-    $client_name = nullable_htmlentities($row['client_name']);
-
-    $config_sql = mysqli_query($mysqli, "SELECT * FROM settings WHERE company_id = 1");
-    $config_row = mysqli_fetch_array($config_sql);
-    $config_stripe_percentage_fee = floatval($config_row['config_stripe_percentage_fee']);
-    $config_stripe_flat_fee = floatval($config_row['config_stripe_flat_fee']);
+    $client_name = escapeHtml($row['client_name']);
 
     // Add up all the payments for the invoice and get the total amount paid to the invoice
     $sql_amount_paid = mysqli_query($mysqli, "SELECT SUM(payment_amount) AS amount_paid FROM payments WHERE payment_invoice_id = $invoice_id");
-    $row = mysqli_fetch_array($sql_amount_paid);
-    $amount_paid = floatval($row['amount_paid']);
+    $row_amt = mysqli_fetch_assoc($sql_amount_paid);
+    $amount_paid = floatval($row_amt['amount_paid']);
     $balance_to_pay = $invoice_amount - $amount_paid;
 
     $balance_to_pay = round($balance_to_pay, 2);
@@ -71,35 +62,51 @@ if (isset($_GET['stripe_create_pi'])) {
         exit("No balance outstanding");
     }
 
-    // Setup Stripe
-    require_once '../plugins/stripe-php/init.php';
-
-
-    $row = mysqli_fetch_array(mysqli_query($mysqli, "SELECT config_stripe_enable, config_stripe_secret, config_stripe_account FROM settings WHERE company_id = 1"));
-    if ($row['config_stripe_enable'] == 0 || $row['config_stripe_account'] == 0) {
+    // Setup Stripe from payment_providers
+    $stripe_provider = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT payment_provider_id, payment_provider_private_key FROM payment_providers WHERE payment_provider_name = 'Stripe' AND payment_provider_active = 1 LIMIT 1"));
+    if (!$stripe_provider) {
         exit("Stripe not enabled / configured");
     }
+    $stripe_provider_id = intval($stripe_provider['payment_provider_id']);
+    $stripe_secret_key = $stripe_provider['payment_provider_private_key'];
 
-    $config_stripe_secret = $row['config_stripe_secret'];
-    $pi_description = "ITFlow: $client_name payment of $invoice_currency_code $balance_to_pay for $invoice_prefix$invoice_number";
+    require_once '../includes/stripe_init.php';
 
-    // Create a PaymentIntent with amount, currency and client details
+    // Get client's Stripe customer ID
+    $stripe_customer_query = mysqli_query($mysqli, "
+        SELECT payment_provider_client FROM client_payment_provider
+        WHERE client_id = $client_id AND payment_provider_id = $stripe_provider_id
+        LIMIT 1
+    ");
+    $stripe_customer = mysqli_fetch_assoc($stripe_customer_query);
+    $stripe_customer_id = $stripe_customer ? escapeSql($stripe_customer['payment_provider_client']) : null;
+
+    // The card fee, when the client pays it - as guest_pay_invoice_stripe.php showed it, and booked from itflow_fees on the way back
+    $balance_cents = (int) round($balance_to_pay * 100);
+    $fee_cents = billingCardFeeCents($balance_cents, billingCardFeeFor($client_id));
+    $pi_metadata = [
+        'itflow_client_id' => $client_id,
+        'itflow_client_name' => $client_name,
+        'itflow_invoice_number' => $invoice_prefix . $invoice_number,
+        'itflow_invoice_id' => $invoice_id,
+    ];
+    if ($fee_cents > 0) {
+        $pi_metadata['itflow_fees'] = "$invoice_id:$fee_cents";
+    }
+
+    $pi_description = "ITFlow: $client_name payment of $invoice_currency_code " . number_format(($balance_cents + $fee_cents) / 100, 2, '.', '')
+        . ($fee_cents > 0 ? ' (with a ' . number_format($fee_cents / 100, 2, '.', '') . ' card fee)' : '') . " for $invoice_prefix$invoice_number";
+
     try {
-        \Stripe\Stripe::setApiKey($config_stripe_secret);
+        \Stripe\Stripe::setApiKey($stripe_secret_key);
 
         $paymentIntent = \Stripe\PaymentIntent::create([
-            'amount' => intval($balance_to_pay * 100), // Times by 100 as Stripe expects values in cents
+            'amount' => $balance_cents + $fee_cents, // Stripe expects cents
             'currency' => $invoice_currency_code,
             'description' => $pi_description,
-            'metadata' => [
-                'itflow_client_id' => $client_id,
-                'itflow_client_name' => $client_name,
-                'itflow_invoice_number' => $invoice_prefix . $invoice_number,
-                'itflow_invoice_id' => $invoice_id,
-            ],
-            'automatic_payment_methods' => [
-                'enabled' => true,
-            ],
+            'metadata' => $pi_metadata,
+            'payment_method_types' => ['card'],
+            'customer' => $stripe_customer_id,
         ]);
 
         $output = [
@@ -108,15 +115,11 @@ if (isset($_GET['stripe_create_pi'])) {
 
         echo json_encode($output);
 
-    } catch (Error $e) {
+    } catch (\Throwable $e) {
         http_response_code(500);
+        error_log("Stripe PI create failed (invoice $invoice_id): " . $e->getMessage());
         echo json_encode(['error' => $e->getMessage()]);
     }
 
-}
-
-if (isset($_GET['get_totp_token'])) {
-    $otp = TokenAuth6238::getTokenCode(strtoupper($_GET['totp_secret']));
-
-    echo json_encode($otp);
+    exit;
 }

@@ -1,0 +1,203 @@
+<?php
+
+// Logging, notifications and custom action triggers
+// Split from the former monolithic functions.php
+
+
+function triggerCustomAction($trigger, $entity) {
+    // Not for the sample records an email preview makes and throws away (functions/email_preview.php)
+    if (function_exists('emailCapturing') && emailCapturing()) {
+        return;
+    }
+    // ITFlow's own follow-up first: an invoice paid in full (invoicePaidFollowUp(), functions/billing.php)
+    if ($trigger === 'invoice_pay' && function_exists('invoicePaidFollowUp')) {
+        invoicePaidFollowUp($entity);
+    }
+    // ...and a text to the ticket's contact, when they agreed to texts (smsClientNotify(), functions/sms.php)
+    if (in_array($trigger, ['ticket_create', 'ticket_resolve', 'ticket_schedule', 'ticket_unschedule'], true) && function_exists('smsClientNotify')) {
+        smsClientNotify($trigger, $entity);
+    }
+    $original_dir = getcwd(); // Save
+
+    chdir(dirname(__FILE__));
+    if (file_exists(__DIR__ . "/custom/custom_action_handler.php")) {
+        include_once __DIR__ . "/custom/custom_action_handler.php";
+    }
+
+    chdir($original_dir); // Restore original working directory
+}
+
+function appNotify($type, $details, $action = null, $client_id = 0, $entity_id = 0) {
+    global $mysqli;
+
+    if (is_null($action)) {
+        $action = "NULL"; // Without quotes for SQL NULL
+    }
+
+    $client_id = intval($client_id);
+    $entity_id = intval($entity_id);
+
+    $type = substr($type, 0, 200);
+    $details = substr($details, 0, 1000);
+    $action = substr($action, 0, 250);
+
+    // Callers pass values that are already SQL-safe, but cutting at a fixed
+    // length (or an escaper that leaves backslashes, e.g. escapeHtml) can leave
+    // an odd trailing backslash that would escape this query's closing quote
+    if ((strlen($type) - strlen(rtrim($type, '\\'))) % 2 === 1) {
+        $type = substr($type, 0, -1);
+    }
+    if ((strlen($details) - strlen(rtrim($details, '\\'))) % 2 === 1) {
+        $details = substr($details, 0, -1);
+    }
+    if ((strlen($action) - strlen(rtrim($action, '\\'))) % 2 === 1) {
+        $action = substr($action, 0, -1);
+    }
+
+    $sql = mysqli_query($mysqli, "SELECT user_id FROM users
+        WHERE user_type = 1 AND user_status = 1 AND user_archived_at IS NULL
+    ");
+
+    while ($row = mysqli_fetch_assoc($sql)) {
+        $user_id = intval($row['user_id']);
+
+        mysqli_query($mysqli, "INSERT INTO notifications SET notification_type = '$type', notification = '$details', notification_action = '$action', notification_client_id = $client_id, notification_entity_id = $entity_id, notification_user_id = $user_id");
+    }
+}
+
+function logAudit($type, $action, $description, $client_id = 0, $entity_id = 0) {
+    global $mysqli, $session_user_agent, $session_ip, $session_user_id;
+
+    $client_id = intval($client_id);
+    $entity_id = intval($entity_id);
+    $session_user_id = intval($session_user_id);
+
+    if (empty($session_user_id)) {
+        $session_user_id = 0;
+    }
+
+    $type = substr($type, 0, 200);
+    $action = substr($action, 0, 255);
+    $description = substr($description, 0, 1000);
+
+    // Callers pass values that are already SQL-safe, but cutting at a fixed
+    // length (or an escaper that leaves backslashes, e.g. escapeHtml) can leave
+    // an odd trailing backslash that would escape this query's closing quote
+    if ((strlen($type) - strlen(rtrim($type, '\\'))) % 2 === 1) {
+        $type = substr($type, 0, -1);
+    }
+    if ((strlen($action) - strlen(rtrim($action, '\\'))) % 2 === 1) {
+        $action = substr($action, 0, -1);
+    }
+    if ((strlen($description) - strlen(rtrim($description, '\\'))) % 2 === 1) {
+        $description = substr($description, 0, -1);
+    }
+
+    mysqli_query($mysqli, "INSERT INTO logs SET log_type = '$type', log_action = '$action', log_description = '$description', log_ip = '$session_ip', log_user_agent = '$session_user_agent', log_client_id = $client_id, log_user_id = $session_user_id, log_entity_id = $entity_id");
+
+    // On to a syslog server or SIEM, when that is set up (functions/log_forward.php)
+    logForwardQueue('audit', mysqli_insert_id($mysqli));
+}
+
+/*
+ * Records a ticket history entry - the per-ticket change trail shown in the
+ * History card on agent/ticket.php.
+ *
+ * Follows the same convention as logAudit() above: the description is
+ * interpolated as-is, so callers pass values that are already SQL-safe.
+ *
+ * Call this AFTER the change has been written - the status stamped on the entry
+ * is whatever the ticket is in at the time of the call.
+ */
+function logTicketHistory($ticket_id, $description) {
+    global $mysqli;
+
+    $ticket_id = intval($ticket_id);
+
+    // ticket_history_description is varchar(255) and NOT NULL, so an over-long
+    // description would be an error under strict mode rather than a truncation
+    $description = substr($description, 0, 255);
+
+    // The description arrives already escaped, and cutting it at 255 can split a
+    // \' pair - the leftover backslash would escape this query's closing quote
+    $trailing_backslashes = strlen($description) - strlen(rtrim($description, '\\'));
+    if ($trailing_backslashes % 2 === 1) {
+        $description = substr($description, 0, -1);
+    }
+
+    $status_name = '';
+    $sql = mysqli_query(
+        $mysqli,
+        "SELECT ticket_status_name FROM tickets
+        LEFT JOIN ticket_statuses ON ticket_status = ticket_status_id
+        WHERE ticket_id = $ticket_id"
+    );
+    if ($sql && mysqli_num_rows($sql)) {
+        $status_name = escapeSql(mysqli_fetch_assoc($sql)['ticket_status_name']);
+    }
+
+    mysqli_query($mysqli, "INSERT INTO ticket_history SET ticket_history_status = '$status_name', ticket_history_description = '$description', ticket_history_ticket_id = $ticket_id");
+}
+
+/*
+ * Records an invoice / quote / recurring invoice history entry - the change
+ * trail shown in the History card on agent/invoice.php and agent/quote.php.
+ *
+ * Same convention as logAudit() and logTicketHistory() above: the description
+ * is interpolated as-is, so callers pass values that are already SQL-safe.
+ *
+ * Pass the id of the document the entry belongs to and leave the other two at
+ * zero - the history table serves all three from one set of rows and each
+ * detail page filters on its own column.
+ */
+function logHistory($status, $description, $invoice_id = 0, $quote_id = 0, $recurring_invoice_id = 0) {
+    global $mysqli;
+
+    $invoice_id = intval($invoice_id);
+    $quote_id = intval($quote_id);
+    $recurring_invoice_id = intval($recurring_invoice_id);
+
+    $status = substr($status, 0, 200);
+
+    // history_description is text as of db 2.7.7, so this cap is about keeping
+    // the trail readable rather than avoiding an overflow
+    $description = substr($description, 0, 1000);
+
+    // Both arrive already escaped, and cutting at a fixed length can split a \'
+    // pair - the leftover backslash would escape this query's closing quote
+    if ((strlen($status) - strlen(rtrim($status, '\\'))) % 2 === 1) {
+        $status = substr($status, 0, -1);
+    }
+    if ((strlen($description) - strlen(rtrim($description, '\\'))) % 2 === 1) {
+        $description = substr($description, 0, -1);
+    }
+
+    mysqli_query($mysqli, "INSERT INTO history SET history_status = '$status', history_description = '$description', history_invoice_id = $invoice_id, history_quote_id = $quote_id, history_recurring_invoice_id = $recurring_invoice_id");
+}
+
+/*
+ * Writes an app log entry - what ITFlow itself does: cron runs, mail, payment
+ * providers, the API, errors (Admin > App Logs, functions/app_log.php).
+ * Unlike logAudit(), it takes plain text and escapes it here. $type is the
+ * level - info, warning, error or debug; anything else is put to the nearest,
+ * as the column takes only those.
+ */
+function logApp($category, $type, $details) {
+    global $mysqli;
+
+    $type = strtolower(trim((string) $type));
+    if (!in_array($type, ['info', 'warning', 'error', 'debug'], true)) {
+        $type = in_array($type, ['critical', 'fatal', 'alert', 'emergency'], true) ? 'error' : ($type === 'warn' ? 'warning' : 'info');
+    }
+
+    // Cut by character, so a name or message with accents isn't cut through the middle of one
+    $category = mb_substr((string) $category, 0, 200);
+    $details = mb_substr((string) $details, 0, 1000);
+    $category_sql = mysqli_real_escape_string($mysqli, $category);
+    $details_sql = mysqli_real_escape_string($mysqli, $details);
+
+    mysqli_query($mysqli, "INSERT INTO app_logs SET app_log_category = '$category_sql', app_log_type = '$type', app_log_details = '$details_sql'");
+
+    // On to a syslog server or SIEM, from the level picked (functions/log_forward.php)
+    logForwardQueue('app', mysqli_insert_id($mysqli), $type, $category);
+}

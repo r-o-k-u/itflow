@@ -1,0 +1,49 @@
+<?php
+// Get Main Side Bar Badge Counts
+
+// Active Clients Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('client_id') AS num FROM clients WHERE client_archived_at IS NULL " . clientScopeSql('clients.client_id') . ""));
+$num_active_clients = $row['num'];
+
+// Active Ticket Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('ticket_id') AS num FROM tickets WHERE ticket_archived_at IS NULL AND ticket_closed_at IS NULL AND ticket_status != 4 " . clientScopeSql('ticket_client_id') . ""));
+$num_active_tickets = $row['num'];
+
+// Recurring Ticket Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('recurring_ticket_id') AS num FROM recurring_tickets WHERE recurring_ticket_paused_at IS NULL " . clientScopeSql('recurring_ticket_client_id') . ""));
+$num_recurring_tickets = $row['num'];
+
+// Active Project Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('project_id') AS num FROM projects WHERE project_archived_at IS NULL AND project_completed_at IS NULL " . clientScopeSql('project_client_id') . ""));
+$num_active_projects = $row['num'];
+
+// Open Invoices Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('invoice_id') AS num FROM invoices WHERE (invoice_status = 'Sent' OR invoice_status = 'Viewed' OR invoice_status = 'Partial' OR invoice_status = 'Draft') AND invoice_archived_at IS NULL " . clientScopeSql('invoice_client_id') . ""));
+$num_open_invoices = $row['num'];
+
+// Recurring Invoice Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('recurring_invoice_id') AS num FROM recurring_invoices WHERE recurring_invoice_archived_at IS NULL " . clientScopeSql('recurring_invoice_client_id') . ""));
+$num_recurring_invoices = $row['num'];
+
+// Contracts ending or renewing soon - within a month of their notice date
+$num_contracts_soon = lookupUserPermission('module_sales') >= 1 && contractsReady()
+    ? intval(mysqli_fetch_row(mysqli_query($mysqli, "SELECT COUNT(*) FROM contracts WHERE contract_archived_at IS NULL AND " . contractClientLiveSql() . " AND " . contractViews()['soon']['where'] . clientScopeSql('contract_client_id')))[0]) : 0;
+
+// Unbilled tickets - billable, done and on no invoice (Billing > Unbilled Time)
+$num_unbilled_tickets = $config_module_enable_accounting == 1 && $config_module_enable_ticketing == 1 && lookupUserPermission('module_sales') >= 1 ? billingUnbilledCount() : 0;
+
+// Expenses to bill on to clients - billable, on no invoice (Unbilled Time too)
+$num_unbilled_expenses = $config_module_enable_accounting == 1 && lookupUserPermission('module_sales') >= 1 && lookupUserPermission('module_financial') >= 1 ? expenseUnbilledCount()['count'] : 0;
+// ...and trips to bill
+$num_unbilled_trips = $config_module_enable_accounting == 1 && lookupUserPermission('module_sales') >= 1 && lookupUserPermission('module_financial') >= 1 ? tripUnbilledCount()['count'] : 0;
+
+// Products whose stock is at or under the reorder level, or out
+$num_products_reorder = $config_module_enable_accounting == 1 && lookupUserPermission('module_sales') >= 1 ? productReorderCount() : 0;
+
+// Open Quotes Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('quote_id') AS num FROM quotes WHERE (quote_status = 'Sent' OR quote_status = 'Viewed') AND quote_archived_at IS NULL " . clientScopeSql('quote_client_id') . ""));
+$num_open_quotes = $row['num'];
+
+// Recurring Expenses Count
+$row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('recurring_expense_id') AS num FROM recurring_expenses WHERE recurring_expense_archived_at IS NULL"));
+$num_recurring_expenses = $row['num'];

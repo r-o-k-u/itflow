@@ -1,0 +1,82 @@
+<?php
+
+require_once '../../../includes/modal_header.php';
+
+enforceUserPermission('module_support', 2);
+
+// The ticket, after the module and client checks - or the modal's error
+$row = ticketForModal($_GET['id'] ?? 0, 2, true);
+$ticket_id = intval($row['ticket_id']);
+
+$ticket_prefix = escapeHtml($row['ticket_prefix']);
+$ticket_number = intval($row['ticket_number']);
+$contact_id = intval($row['ticket_contact_id']);
+$client_name = escapeHtml($row['client_name']);
+$client_id = intval($row['ticket_client_id']);
+
+// A ticket with no client is internal work - nobody's contact
+if (!$client_id) {
+    echo json_encode(['error' => 'This ticket has no client, so no contact.']);
+    exit;
+}
+
+ob_start();
+
+?>
+
+<div class="modal-header bg-dark">
+    <h5 class="modal-title"><i class="fa fa-fw fa-user me-2"></i>Change contact <small class="ms-1 opacity-75"><?= "$ticket_prefix$ticket_number" ?></small></h5>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+</div>
+<form action="post.php" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+    <input type="hidden" name="ticket_id" value="<?= $ticket_id ?>">
+    <div class="modal-body">
+
+        <div class="mb-3">
+            <label>Contact</label>
+            <div class="input-group">
+                    <span class="input-group-text"><i class="fa fa-fw fa-user"></i></span>
+                <select class="form-select select2" name="contact">
+                    <option value="">No contact</option>
+                    <?php
+                    $sql_client_contacts_select = mysqli_query($mysqli, "SELECT contact_id, contact_name, contact_client_id, contact_photo, contact_title, contact_primary, contact_technical FROM contacts WHERE contact_client_id = $client_id AND contact_archived_at IS NULL ORDER BY contact_primary DESC, contact_technical DESC, contact_name ASC");
+                    while ($row = mysqli_fetch_assoc($sql_client_contacts_select)) {
+                        $contact_id_select = intval($row['contact_id']);
+                        $contact_name_select = escapeHtml($row['contact_name']);
+
+                        ?>
+                        <option
+                            value="<?= $contact_id_select ?>"
+                            <?php if ($contact_id_select  == $contact_id) { echo "selected"; } ?>
+                            <?= selectOptionContact($row['contact_client_id'] ?? 0, $row['contact_name'], $row['contact_photo'] ?? '', contactOptionDescription($row), $row['contact_id'] ?? 0) ?>>
+                            <?= $contact_name_select ?>
+                        </option>
+                    <?php } ?>
+                </select>
+            </div>
+        </div>
+
+        <?php if (!empty($config_smtp_provider)) { ?>
+            <div class="mb-3">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="contact_notify" value="1" id="checkNotifyContact" <?php if ($config_ticket_client_general_notifications) { echo "checked"; } ?>>
+                    <label class="form-check-label" for="checkNotifyContact">
+                        Email the new contact a link to this ticket
+                    </label>
+                </div>
+            </div>
+        <?php } ?>
+
+    </div>
+
+    <div class="modal-footer">
+        <button type="submit" name="edit_ticket_contact" class="btn btn-primary text-bold"><i class="fa fa-check me-2"></i>Save</button>
+        <button type="button" class="btn btn-light" data-bs-dismiss="modal"><i class="fa fa-times me-2"></i>Cancel</button>
+    </div>
+
+</form>
+
+<?php
+
+require_once '../../../includes/modal_footer.php';

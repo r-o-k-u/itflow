@@ -11,8 +11,18 @@ if ($sql && mysqli_num_rows($sql) > 0) {
     $return_arr['count'] = mysqli_num_rows($sql);
 
     $row = array();
-    while ($row = mysqli_fetch_array($sql)) {
+    while ($row = mysqli_fetch_assoc($sql)) {
         $return_arr['data'][] = $row;
+    }
+
+    // Each record's tags, when the endpoint names the kind it reads ($api_tag_entity, as in tagEntity())
+    if (!empty($api_tag_entity)) {
+        $return_arr['data'] = tagApiAttach($return_arr['data'], $api_tag_entity);
+    }
+
+    // Each asset's details, as asset_specs ($api_asset_specs, set by api/v1/assets/read.php)
+    if (!empty($api_asset_specs)) {
+        $return_arr['data'] = assetSpecsApiAttach($return_arr['data']);
     }
 
     echo json_encode($return_arr);
@@ -21,6 +31,8 @@ if ($sql && mysqli_num_rows($sql) > 0) {
 else {
     $return_arr['success'] = "False";
     $return_arr['message'] = "No resource (for this client and company) with the specified parameter(s).";
+
+    logApp("API", "Error", "Read query failed on API call to " . escapeSql(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH)) . " containing " . count($_GET) . " GET variables" . " via API key " . escapeSql($api_key_name) . " from IP " . escapeSql(getIP()) . " with agent " . escapeSql(getUserAgent()));
 
     // Log any database/schema related errors to the PHP Error log
     if (mysqli_error($mysqli)) {

@@ -1,66 +1,135 @@
+/**
+ * Re-run <script> elements that arrived via innerHTML, strictly in order.
+ *
+ * External scripts are awaited before the next one starts; inline scripts run
+ * synchronously. Order matters because a modal's own script is emitted before
+ * modal_footer.php's http.js / autocomplete.js / app.js, and depends on them.
+ */
+function runScriptsInOrder(scripts) {
+    return scripts.reduce(function (chain, old) {
+        return chain.then(function () {
+            return new Promise(function (resolve) {
+                const s = document.createElement('script');
+                for (const attr of old.attributes) {
+                    s.setAttribute(attr.name, attr.value);
+                }
+                if (old.src) {
+                    s.async = false;
+                    s.onload = resolve;
+                    s.onerror = function () {
+                        console.error('ajax-modal: failed to load', old.src);
+                        resolve();
+                    };
+                    old.replaceWith(s);
+                } else {
+                    s.textContent = old.textContent;
+                    old.replaceWith(s);
+                    resolve();
+                }
+            });
+        });
+    }, Promise.resolve());
+}
+
 // Ajax Modal Load Script
-//
-/* Example Triggering  -->
-
-<button type="button"
-    class="btn btn-primary"
-    data-toggle = "ajax-modal" // Triggers the AJAX Modal
-    data-modal-size = "lg" // Optional: Defaults to md
-    data-ajax-url="ajax/ajax_contact_edit.php"
-    data-ajax-id="123">
-    Edit Contact
-</button>
-
-*/
-$(document).on('click', '[data-toggle="ajax-modal"]', function (e) {
+document.addEventListener('click', function (e) {
+    const trigger = e.target.closest('.ajax-modal');
+    if (!trigger) {
+        return;
+    }
     e.preventDefault();
-    
-    // Get the URL and ID from the element's data attributes.
-    var $trigger = $(this);
-    var ajaxUrl = $trigger.data('ajax-url');
-    var ajaxId = $trigger.data('ajax-id');
-    var modalSize = $trigger.data('modal-size') || 'md';
-    
-    // Make the AJAX call to fetch modal content.
-    $.ajax({
-        url: ajaxUrl,
+
+    // Prefer data-modal-url, fallback to href
+    const modalUrl = trigger.dataset.modalUrl || trigger.getAttribute('href') || '#';
+    const modalSize = trigger.dataset.modalSize || 'md';
+    const modalId = 'ajaxModal_' + Date.now();
+
+    // If no usable URL, bail
+    if (!modalUrl || modalUrl === '#') {
+        console.warn('ajax-modal: No modal URL found on trigger:', trigger);
+        return;
+    }
+
+    const host = document.querySelector('.app-main') || document.body;
+
+    // Show loading spinner while fetching content
+    const spinner = document.createElement('div');
+    spinner.id = 'modal-loading-spinner';
+    spinner.className = 'text-center p-5';
+    spinner.innerHTML = '<i class="fas fa-spinner fa-spin fa-2x text-muted"></i>';
+    host.appendChild(spinner);
+
+    function clearSpinner() {
+        const el = document.getElementById('modal-loading-spinner');
+        if (el) {
+            el.remove();
+        }
+    }
+
+    fetch(modalUrl, {
         method: 'GET',
-        data: { id: ajaxId },
-        dataType: 'json',
-        success: function (response) {
+        headers: { 'Accept': 'application/json' },
+        credentials: 'same-origin'
+    })
+        .then(function (res) {
+            if (!res.ok) {
+                throw new Error('HTTP ' + res.status);
+            }
+            return res.json();
+        })
+        .then(function (response) {
+            clearSpinner();
+
             if (response.error) {
                 alert(response.error);
                 return;
             }
-            
-            // Create a modal ID by appending the ajaxId.
-            var modalId = 'ajaxModal_' + ajaxId + '_' + new Date().getTime();
-            
-            // Remove any existing modal with this ID.
-            $('#' + modalId).remove();
-            
-            // Build the modal HTML using the returned title and content.
-            var modalHtml = 
-                '<div class="modal fade" id="' + modalId + '" tabindex="-1">' +
-                '    <div class="modal-dialog modal-'+ modalSize +'">' +
-                '       <div class="modal-content bg-dark">'
-                            + response.content +
-                '        </div>' +
-                '    </div>' +
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'modal fade';
+            wrapper.id = modalId;
+            wrapper.tabIndex = -1;
+            wrapper.innerHTML =
+                '<div class="modal-dialog modal-' + modalSize + '">' +
+                    '<div class="modal-content border-dark">' +
+                        response.content +
+                    '</div>' +
                 '</div>';
-            
-            // Append the modal to the body and show it.
-            $('.content-wrapper').append(modalHtml);
-            var $modal = $('#' + modalId);
-            $modal.modal('show');
-            
-            // Remove the modal from the DOM once it's hidden.
-            $modal.on('hidden.bs.modal', function () {
-                $(this).remove();
+            host.appendChild(wrapper);
+
+            // innerHTML does not execute <script> tags, so they have to be
+            // re-injected. They must also run IN ORDER: a modal payload loads
+            // its own script first and modal_footer.php's http.js / app.js
+            // after, and the modal script depends on helpers those define.
+            // A dynamically created <script src> is async by default and would
+            // run in completion order instead - jQuery's .append() loaded them
+            // sequentially, which is the behaviour reproduced here.
+            runScriptsInOrder(Array.from(wrapper.querySelectorAll('script')))
+                .then(function () {
+                    bootstrap.Modal.getOrCreateInstance(wrapper).show();
+                });
+
+            wrapper.addEventListener('hidden.bs.modal', function () {
+                // TinyMCE keeps its own registry of editors, and dropping the
+                // modal's DOM does not take them out of it - it only purges an
+                // editor whose container was itself detached, not one whose
+                // whole modal went. The dead editor then made tinymce.init skip
+                // the next textarea with the same id (New Ticket's #detailsInput
+                // came back bare until a refresh) and tinymce.get() kept handing
+                // it out. Remove them before the modal goes.
+                if (window.tinymce) {
+                    tinymce.get().forEach(function (editor) {
+                        if (wrapper.contains(editor.getElement())) {
+                            editor.remove();
+                        }
+                    });
+                }
+                wrapper.remove();
             });
-        },
-        error: function () {
-            alert('Error loading modal content.');
-        }
-    });
+        })
+        .catch(function (error) {
+            clearSpinner();
+            alert('Error loading modal content. Please try again.');
+            console.error('Modal AJAX Error:', error);
+        });
 });

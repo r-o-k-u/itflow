@@ -1,0 +1,1061 @@
+<?php
+
+/*
+ * ITFlow - Export helpers
+ *
+ * Shared plumbing behind the list page export modals:
+ *   - a per-export column registry (label, source field, formatting, default state)
+ *   - the column picker that every export modal renders
+ *   - the CSV and PDF writers
+ *
+ * Handlers keep owning their own filter parsing and SQL. They hand rows over one
+ * at a time, in the same loop the old fputcsv() call sat in:
+ *
+ *     $export = beginExport('assets', $_POST['export_assets'], "$file_name_prepend" . 'Assets', 'Assets', $filter_summary);
+ *     while ($row = mysqli_fetch_assoc($sql)) {
+ *         addExportRow($export, $row);
+ *     }
+ *     finishExport($export);
+ *
+ * A column's 'field' is just a key on the row array handed to addExportRow(), so a
+ * handler that needs a computed value (a prefixed number, a decrypted secret, a
+ * status word) sets that key on $row before the call - see getExportColumns() notes.
+ */
+
+// PDF is a read-and-print format, not a bulk transport. Past this many rows TCPDF's
+// HTML table builder gets slow enough to walk into max_execution_time, so the
+// handlers bounce the request back to CSV instead of timing out mid-download.
+DEFINE("EXPORT_PDF_MAX_ROWS", 2000);
+
+/*
+ * The column registry - one entry per export, in the order columns should appear.
+ *
+ *   'label'   Column heading in the CSV / PDF.
+ *   'field'   Key on the row array. Defaults to the column key itself.
+ *   'format'  '' (raw), 'phone', 'money', 'number'. Only affects presentation.
+ *   'default' false to leave the box unticked when the modal opens. Defaults true.
+ *   'weight'  Relative PDF column width, default 1. Bump it for long free text.
+ *
+ * Column keys are what the modal posts back, so they are whitelisted against this
+ * registry on the way in - an unknown key is dropped, not queried.
+ */
+function getExportColumns($export_type) {
+
+    $registry = [
+
+        // Clients - handler joins the primary contact and primary location
+        'clients' => [
+            'client_name'          => ['label' => 'Client Name', 'weight' => 2],
+            'client_type'          => ['label' => 'Industry'],
+            'client_referral'      => ['label' => 'Referral'],
+            'client_website'       => ['label' => 'Website', 'weight' => 2],
+            'location_name'        => ['label' => 'Primary Location Name'],
+            'location_phone'       => ['label' => 'Location Phone', 'format' => 'phone'],
+            'location_address'     => ['label' => 'Location Address', 'weight' => 2],
+            'location_city'        => ['label' => 'City'],
+            'location_state'       => ['label' => 'State'],
+            'location_zip'         => ['label' => 'Postal Code'],
+            'location_country'     => ['label' => 'Country'],
+            'contact_name'         => ['label' => 'Primary Contact Name'],
+            'contact_title'        => ['label' => 'Title'],
+            'contact_phone'        => ['label' => 'Contact Phone', 'format' => 'phone'],
+            'contact_extension'    => ['label' => 'Extension'],
+            'contact_mobile'       => ['label' => 'Contact Mobile', 'format' => 'phone'],
+            'contact_email'        => ['label' => 'Contact Email', 'weight' => 2],
+            'client_currency_code' => ['label' => 'Currency'],
+            'client_tax_id_number' => ['label' => 'Tax ID'],
+            'client_tax_rate'      => ['label' => 'Tax Rate', 'default' => false],
+            'client_tax_exempt_display' => ['label' => 'Tax Exempt', 'default' => false],
+            'client_tax_exempt_number' => ['label' => 'Exemption Certificate', 'default' => false],
+            'client_tax_exempt_expires' => ['label' => 'Exemption Expires', 'default' => false],
+            'client_abbreviation'  => ['label' => 'Abbreviation'],
+        ],
+
+        'contacts' => [
+            'contact_name'       => ['label' => 'Name', 'weight' => 2],
+            'contact_title'      => ['label' => 'Title'],
+            'contact_department' => ['label' => 'Department'],
+            'contact_email'      => ['label' => 'Email', 'weight' => 2],
+            'contact_phone'      => ['label' => 'Phone', 'format' => 'phone'],
+            'contact_extension'  => ['label' => 'Ext'],
+            'contact_mobile'     => ['label' => 'Mobile', 'format' => 'phone'],
+            'location_name'      => ['label' => 'Location'],
+        ],
+
+        // location_primary_text, contact_name and the counts are built by the handler's query
+        'locations' => [
+            'location_name'        => ['label' => 'Name', 'weight' => 2],
+            'location_primary_text' => ['label' => 'Primary'],
+            'location_description' => ['label' => 'Description', 'weight' => 3],
+            'location_address'     => ['label' => 'Address', 'weight' => 2],
+            'location_city'        => ['label' => 'City'],
+            'location_state'       => ['label' => 'State'],
+            'location_zip'         => ['label' => 'Postal Code'],
+            'location_country'     => ['label' => 'Country', 'default' => false],
+            'location_phone'       => ['label' => 'Phone', 'format' => 'phone'],
+            'location_hours'       => ['label' => 'Hours'],
+            'contact_name'         => ['label' => 'On-site Contact'],
+            'contact_count'        => ['label' => 'People', 'format' => 'number', 'default' => false],
+            'asset_count'          => ['label' => 'Assets', 'format' => 'number', 'default' => false],
+            'location_notes'       => ['label' => 'Access Notes', 'weight' => 3, 'default' => false],
+            'client_name'          => ['label' => 'Client', 'default' => false],
+        ],
+
+        'vendors' => [
+            'vendor_name'           => ['label' => 'Name', 'weight' => 2],
+            'vendor_description'    => ['label' => 'Description', 'weight' => 3],
+            'vendor_tags'           => ['label' => 'Tags', 'default' => false],
+            'vendor_phone'          => ['label' => 'Support Phone', 'format' => 'phone'],
+            'vendor_extension'      => ['label' => 'Extension', 'default' => false],
+            'vendor_email'          => ['label' => 'Support Email', 'weight' => 2],
+            'vendor_website'        => ['label' => 'Website', 'weight' => 2],
+            'vendor_status_page'    => ['label' => 'Status Page', 'weight' => 2, 'default' => false],
+            'vendor_portal'         => ['label' => 'Support Portal', 'weight' => 2, 'default' => false],
+            'vendor_hours'          => ['label' => 'Hours'],
+            'vendor_sla'            => ['label' => 'SLA', 'default' => false],
+            'vendor_account_number' => ['label' => 'Account Number'],
+            'vendor_code'           => ['label' => 'PIN / Code', 'default' => false],
+            'vendor_contact_name'   => ['label' => 'Account Manager'],
+            'vendor_contact_phone'  => ['label' => 'Account Manager Phone', 'format' => 'phone', 'default' => false],
+            'vendor_contact_email'  => ['label' => 'Account Manager Email', 'default' => false],
+            'open_case_count'       => ['label' => 'Open Cases', 'format' => 'number', 'default' => false],
+            'vendor_notes'          => ['label' => 'Notes', 'weight' => 3],
+            'client_name'           => ['label' => 'Client', 'default' => false],
+        ],
+
+        'assets' => [
+            'asset_name'              => ['label' => 'Name', 'weight' => 2],
+            'asset_description'       => ['label' => 'Description', 'weight' => 3],
+            'asset_type'              => ['label' => 'Type'],
+            'asset_make'              => ['label' => 'Make'],
+            'asset_model'             => ['label' => 'Model'],
+            'asset_serial'            => ['label' => 'Serial Number'],
+            'asset_os'                => ['label' => 'Operating System', 'weight' => 2],
+            'asset_purchase_date'     => ['label' => 'Purchase Date'],
+            'asset_warranty_expire'   => ['label' => 'Warranty Expire'],
+            'asset_install_date'      => ['label' => 'Install Date'],
+            'contact_name'            => ['label' => 'Assigned To'],
+            'location_name'           => ['label' => 'Location'],
+            'asset_physical_location' => ['label' => 'Physical Location'],
+            'asset_notes'             => ['label' => 'Notes', 'weight' => 3],
+            // Available from the handler's join but not exported historically
+            'client_name'             => ['label' => 'Client', 'default' => false],
+            'interface_ip'            => ['label' => 'Primary IP', 'default' => false],
+            'interface_mac'           => ['label' => 'Primary MAC', 'default' => false],
+            'asset_status'            => ['label' => 'Status', 'default' => false],
+        ],
+
+        'asset_interfaces' => [
+            // The first eight are the import's columns, in its order - VLANs ninth and optional
+            'interface_name'        => ['label' => 'Name'],
+            'interface_description' => ['label' => 'Description', 'weight' => 3],
+            'interface_type'        => ['label' => 'Type'],
+            'interface_mac'         => ['label' => 'MAC'],
+            'interface_ip'          => ['label' => 'IP'],
+            'interface_nat_ip'      => ['label' => 'NAT IP'],
+            'interface_ipv6'        => ['label' => 'IPv6', 'weight' => 2],
+            'network_name'          => ['label' => 'Network'],
+            'interface_vlans'       => ['label' => 'VLANs'],
+            'network'               => ['label' => 'Subnet', 'default' => false],
+            'connected_to'          => ['label' => 'Connected To', 'weight' => 2, 'default' => false],
+            'interface_notes'       => ['label' => 'Notes', 'weight' => 3, 'default' => false],
+        ],
+
+        'networks' => [
+            // The first nine are the import's columns, in its order
+            'network_name'          => ['label' => 'Name', 'weight' => 2],
+            'network_description'   => ['label' => 'Description', 'weight' => 3],
+            'network_vlan'          => ['label' => 'VLAN'],
+            'network'               => ['label' => 'Network (CIDR)'],
+            'network_gateway'       => ['label' => 'Gateway'],
+            'network_dhcp_range'    => ['label' => 'IP Range'],
+            'network_primary_dns'   => ['label' => 'Primary DNS'],
+            'network_secondary_dns' => ['label' => 'Secondary DNS'],
+            'network_type'          => ['label' => 'Type'],
+            'location_name'         => ['label' => 'Site', 'default' => false],
+            'vendor_name'           => ['label' => 'Provider', 'default' => false],
+            'network_notes'         => ['label' => 'Notes', 'weight' => 3, 'default' => false],
+            'network_tags'          => ['label' => 'Tags', 'weight' => 2, 'default' => false],
+            'client_name'           => ['label' => 'Client', 'weight' => 2, 'default' => false],
+        ],
+
+        'network_ips' => [
+            // The import's columns, in its order - Type and MAC after the original three
+            'ip_address'     => ['label' => 'IP Address'],
+            'ip_hostname'    => ['label' => 'Hostname', 'weight' => 2],
+            'ip_description' => ['label' => 'Description', 'weight' => 3],
+            'ip_type'        => ['label' => 'Type'],
+            'ip_mac'         => ['label' => 'MAC'],
+            // Available from the handler's join but not exported by default -
+            // the export is always scoped to one network of one client
+            'network_name'   => ['label' => 'Network', 'default' => false],
+            'client_name'    => ['label' => 'Client', 'default' => false],
+        ],
+
+        'certificates' => [
+            'certificate_name'        => ['label' => 'Name', 'weight' => 2],
+            'certificate_description' => ['label' => 'Description', 'weight' => 3],
+            'certificate_domain'      => ['label' => 'Host', 'weight' => 2],
+            'certificate_issued_by'   => ['label' => 'Issuer', 'weight' => 2],
+            'certificate_expire'      => ['label' => 'Expiration Date'],
+            // The status column holds a key; the handler aliases its label
+            'certificate_check_status' => ['label' => 'Last Check', 'field' => 'certificate_check_label'],
+            'certificate_issued_at'   => ['label' => 'Issued', 'default' => false],
+            'certificate_names'       => ['label' => 'Names Covered', 'field' => 'certificate_names_list', 'weight' => 3, 'default' => false],
+            'certificate_fingerprint' => ['label' => 'SHA-256 Fingerprint', 'weight' => 3, 'default' => false],
+            'certificate_checked_at'  => ['label' => 'Checked At', 'default' => false],
+            'domain_name'             => ['label' => 'Domain', 'default' => false],
+            'certificate_notes'       => ['label' => 'Notes', 'weight' => 3, 'default' => false],
+            'client_name'             => ['label' => 'Client', 'weight' => 2, 'default' => false],
+        ],
+
+        'domains' => [
+            'domain_name'        => ['label' => 'Domain', 'weight' => 2],
+            'domain_description' => ['label' => 'Description', 'weight' => 3],
+            // The columns hold vendor IDs; the handler aliases the joined names
+            'domain_registrar'   => ['label' => 'Registrar', 'field' => 'domain_registrar_name'],
+            'domain_webhost'     => ['label' => 'Web Host', 'field' => 'domain_webhost_name'],
+            'domain_expire'      => ['label' => 'Expiration Date'],
+            'domain_dnshost'     => ['label' => 'DNS Host', 'field' => 'domain_dnshost_name', 'default' => false],
+            'domain_mailhost'    => ['label' => 'Mail Host', 'field' => 'domain_mailhost_name', 'default' => false],
+            'domain_auto_renew'  => ['label' => 'Auto-renew', 'field' => 'domain_auto_renew_label', 'default' => false],
+            'domain_name_servers' => ['label' => 'Name Servers', 'weight' => 2, 'default' => false],
+            'domain_mail_servers' => ['label' => 'MX Records', 'weight' => 2, 'default' => false],
+            'domain_dmarc'       => ['label' => 'DMARC', 'weight' => 2, 'default' => false],
+            'domain_tags'        => ['label' => 'Tags', 'weight' => 2, 'default' => false],
+            'domain_notes'       => ['label' => 'Notes', 'weight' => 3, 'default' => false],
+            'client_name'        => ['label' => 'Client', 'weight' => 2, 'default' => false],
+        ],
+
+        // Defaults match what this export has always emitted, secrets included.
+        // The handler decrypts into credential_username / credential_password.
+        'credentials' => [
+            'credential_name'        => ['label' => 'Name', 'weight' => 2],
+            'credential_description' => ['label' => 'Description', 'weight' => 3],
+            'credential_username'    => ['label' => 'Username'],
+            'credential_password'    => ['label' => 'Password'],
+            'credential_otp_secret'  => ['label' => 'TOTP'],
+            'credential_uri'         => ['label' => 'URI', 'weight' => 2],
+            'credential_uri_2'       => ['label' => 'URI 2', 'default' => false],
+            'credential_tags'        => ['label' => 'Tags', 'default' => false],
+            'asset_name'             => ['label' => 'Asset', 'default' => false],
+            'contact_name'           => ['label' => 'Contact', 'default' => false],
+            'credential_password_changed' => ['label' => 'Password Changed', 'default' => false],
+            'credential_note'        => ['label' => 'Notes', 'weight' => 3, 'default' => false],
+            'client_name'            => ['label' => 'Client', 'default' => false],
+        ],
+
+        // seats_used, assigned_to_assets / assigned_to_contacts, software_keys_list and software_tags are built by the handler's query
+        'software' => [
+            'software_name'         => ['label' => 'Name', 'weight' => 2],
+            'software_version'      => ['label' => 'Version'],
+            'software_description'  => ['label' => 'Description', 'weight' => 3],
+            'software_type'         => ['label' => 'Type'],
+            'software_license_type' => ['label' => 'License Type'],
+            'software_seats'        => ['label' => 'Seats', 'format' => 'number'],
+            'seats_used'            => ['label' => 'Seats Used', 'format' => 'number'],
+            'software_key'          => ['label' => 'Key', 'weight' => 2],
+            'software_keys_list'    => ['label' => 'Individual Keys', 'weight' => 3, 'default' => false],
+            'assigned_to_assets'    => ['label' => 'Assets', 'weight' => 2],
+            'assigned_to_contacts'  => ['label' => 'Contacts', 'weight' => 2],
+            'vendor_name'           => ['label' => 'Vendor', 'default' => false],
+            'software_purchase_reference' => ['label' => 'Order Ref', 'default' => false],
+            'software_purchase'     => ['label' => 'Purchased'],
+            'software_expire'       => ['label' => 'Expires'],
+            'client_name'           => ['label' => 'Client', 'default' => false],
+            'software_tags'         => ['label' => 'Tags', 'weight' => 2, 'default' => false],
+            'software_notes'        => ['label' => 'Notes', 'weight' => 3],
+        ],
+
+        // ticket_number_display is prefixed by the handler
+        'tickets' => [
+            'ticket_number_display' => ['label' => 'Ticket Number'],
+            'ticket_priority'       => ['label' => 'Priority'],
+            'ticket_status_name'    => ['label' => 'Status'],
+            'ticket_subject'        => ['label' => 'Subject', 'weight' => 3],
+            'ticket_created_at'     => ['label' => 'Date Opened'],
+            'ticket_resolved_at'    => ['label' => 'Date Resolved'],
+            'ticket_closed_at'      => ['label' => 'Date Closed'],
+            'client_name'           => ['label' => 'Client', 'default' => false],
+            'contact_name'          => ['label' => 'Contact', 'default' => false],
+            'ticket_assigned_to'    => ['label' => 'Assigned To', 'default' => false],
+            'ticket_category_name'  => ['label' => 'Category', 'default' => false],
+            'ticket_billable'       => ['label' => 'Billable', 'default' => false],
+            'ticket_tags'           => ['label' => 'Tags', 'weight' => 2, 'default' => false],
+        ],
+
+        // Projects - the handler adds the state, progress and hours (projectStats())
+        'projects' => [
+            'project_reference'   => ['label' => 'Number'],
+            'project_name'        => ['label' => 'Project', 'weight' => 3],
+            'client_name'         => ['label' => 'Client', 'weight' => 2],
+            'project_state'       => ['label' => 'State'],
+            'user_name'           => ['label' => 'Manager'],
+            'contact_name'        => ['label' => 'Client Contact', 'default' => false],
+            'project_start'       => ['label' => 'Start', 'default' => false],
+            'project_due'         => ['label' => 'Due'],
+            'project_completed'   => ['label' => 'Completed'],
+            'tickets_done'        => ['label' => 'Tickets Done', 'format' => 'number'],
+            'tickets_total'       => ['label' => 'Tickets', 'format' => 'number'],
+            'tasks_done'          => ['label' => 'Tasks Done', 'format' => 'number', 'default' => false],
+            'tasks_total'         => ['label' => 'Tasks', 'format' => 'number', 'default' => false],
+            'hours_logged'        => ['label' => 'Hours Logged', 'format' => 'number'],
+            'project_budget_hours' => ['label' => 'Budget Hours', 'format' => 'number'],
+            'hours_unbilled'      => ['label' => 'Hours Not Invoiced', 'format' => 'number', 'default' => false],
+            'project_description' => ['label' => 'Scope', 'weight' => 3, 'default' => false],
+        ],
+
+        // Services - the counts, attention and review columns are built by the handler
+        'services' => [
+            'service_name'        => ['label' => 'Service', 'weight' => 2],
+            'client_name'         => ['label' => 'Client', 'weight' => 2],
+            'service_category'    => ['label' => 'Category'],
+            'service_importance'  => ['label' => 'Importance'],
+            'service_description' => ['label' => 'Description', 'weight' => 3],
+            'service_assets'      => ['label' => 'Runs On', 'weight' => 3],
+            'service_vendors'     => ['label' => 'Vendors', 'weight' => 2],
+            'service_contacts'    => ['label' => 'People', 'weight' => 2, 'default' => false],
+            'service_domains'     => ['label' => 'Domains', 'weight' => 2, 'default' => false],
+            'service_backup'      => ['label' => 'Backup and Recovery', 'weight' => 3],
+            'service_attention'   => ['label' => 'Needs Attention', 'weight' => 3],
+            'service_review'      => ['label' => 'Next Review'],
+            'service_reviewed'    => ['label' => 'Last Reviewed', 'default' => false],
+            'service_review_every' => ['label' => 'Review Every', 'default' => false],
+            'open_tickets'        => ['label' => 'Open Tickets', 'format' => 'number', 'default' => false],
+            'service_state'       => ['label' => 'State', 'default' => false],
+            'service_tags'        => ['label' => 'Tags', 'weight' => 2, 'default' => false],
+        ],
+
+        // invoice_number_display is prefix . number, built by the handler
+        'invoices' => [
+            'invoice_number_display' => ['label' => 'Invoice Number'],
+            'invoice_scope'          => ['label' => 'Scope', 'weight' => 3],
+            'invoice_subtotal'       => ['label' => 'Subtotal', 'format' => 'money', 'default' => false],
+            'invoice_discount_amount' => ['label' => 'Discount', 'format' => 'money', 'default' => false],
+            'invoice_tax'            => ['label' => 'Tax', 'format' => 'money', 'default' => false],
+            'invoice_tax_parts'      => ['label' => 'Tax by Part', 'weight' => 2, 'default' => false],
+            'invoice_amount'         => ['label' => 'Amount', 'format' => 'money'],
+            'invoice_date'           => ['label' => 'Issued Date'],
+            'invoice_due'            => ['label' => 'Due Date'],
+            'invoice_status'         => ['label' => 'Status'],
+            'client_name'            => ['label' => 'Client', 'weight' => 2],
+            'category_name'          => ['label' => 'Category', 'default' => false],
+            'invoice_currency_code'  => ['label' => 'Currency', 'default' => false],
+            'amount_paid'            => ['label' => 'Paid', 'format' => 'money', 'default' => false],
+            'invoice_balance'        => ['label' => 'Balance', 'format' => 'money', 'default' => false],
+        ],
+
+        'quotes' => [
+            'quote_number_display' => ['label' => 'Quote Number'],
+            'quote_scope'          => ['label' => 'Scope', 'weight' => 3],
+            'quote_amount'         => ['label' => 'Amount', 'format' => 'money'],
+            'quote_tax'            => ['label' => 'Tax', 'format' => 'money', 'default' => false],
+            'quote_monthly_amount' => ['label' => 'Monthly', 'format' => 'money'],
+            'quote_date'           => ['label' => 'Date'],
+            'quote_status'         => ['label' => 'Status'],
+            'client_name'          => ['label' => 'Client', 'weight' => 2, 'default' => false],
+            'category_name'        => ['label' => 'Category', 'default' => false],
+        ],
+
+        'recurring_invoices' => [
+            'recurring_invoice_number_display' => ['label' => 'Recurring Number'],
+            'recurring_invoice_scope'          => ['label' => 'Scope', 'weight' => 3],
+            'recurring_invoice_amount'         => ['label' => 'Amount', 'format' => 'money'],
+            'recurring_invoice_tax'            => ['label' => 'Tax', 'format' => 'money', 'default' => false],
+            'recurring_invoice_frequency_display' => ['label' => 'Frequency'],
+            'recurring_invoice_created_at'     => ['label' => 'Date Created'],
+            'client_name'                      => ['label' => 'Client', 'weight' => 2, 'default' => false],
+            'category_name'                    => ['label' => 'Category', 'default' => false],
+        ],
+
+        'products' => [
+            'product_name'          => ['label' => 'Product', 'weight' => 2],
+            'product_type_label'    => ['label' => 'Type', 'default' => false],
+            'product_code'          => ['label' => 'Code'],
+            'product_description'   => ['label' => 'Description', 'weight' => 3],
+            'product_price'         => ['label' => 'Price', 'format' => 'money'],
+            'product_cost'          => ['label' => 'Cost', 'format' => 'money', 'default' => false],
+            'product_margin'        => ['label' => 'Margin', 'default' => false],
+            'product_billed'        => ['label' => 'Billed'],
+            'product_currency_code' => ['label' => 'Currency', 'default' => false],
+            'category_name'         => ['label' => 'Category'],
+            'product_tax'           => ['label' => 'Tax'],
+            'vendor_name'           => ['label' => 'Vendor', 'default' => false],
+            'product_vendor_part'   => ['label' => 'Part Number', 'default' => false],
+            'product_stock_display' => ['label' => 'In Stock', 'default' => false],
+            'product_stock_value'   => ['label' => 'Stock Value', 'format' => 'money', 'default' => false],
+            'product_reorder_display' => ['label' => 'Reorder At', 'default' => false],
+            'product_order_display' => ['label' => 'Order', 'default' => false],
+            'product_location'      => ['label' => 'Location', 'default' => false],
+            'product_asset_type'    => ['label' => 'Asset Type', 'default' => false],
+            'product_make'          => ['label' => 'Make', 'default' => false],
+            'product_model'         => ['label' => 'Model', 'default' => false],
+            'product_warranty_display' => ['label' => 'Warranty', 'default' => false],
+            'product_notes'         => ['label' => 'Notes', 'weight' => 3, 'default' => false],
+        ],
+
+        'expenses' => [
+            'expense_date'        => ['label' => 'Date'],
+            'expense_amount'      => ['label' => 'Amount', 'format' => 'money'],
+            'expense_before_tax'  => ['label' => 'Before Tax', 'format' => 'money', 'default' => false],
+            'expense_tax_amount'  => ['label' => 'Tax', 'format' => 'money', 'default' => false],
+            'expense_tax_rate'    => ['label' => 'Tax Rate', 'default' => false],
+            'vendor_name'         => ['label' => 'Vendor', 'weight' => 2],
+            'expense_description' => ['label' => 'Description', 'weight' => 3],
+            'category_name'       => ['label' => 'Category'],
+            'account_name'        => ['label' => 'Account'],
+            'client_name'         => ['label' => 'Client', 'weight' => 2, 'default' => false],
+            'expense_payment_method' => ['label' => 'Paid By', 'default' => false],
+            'expense_reference'   => ['label' => 'Reference', 'default' => false],
+            'expense_receipt_display' => ['label' => 'Receipt', 'default' => false],
+            'expense_paid_by_display' => ['label' => 'Paid Personally', 'default' => false],
+            'expense_billing_display' => ['label' => 'Billing', 'default' => false],
+            'expense_billed_on'   => ['label' => 'Billed On', 'default' => false],
+            'user_name'           => ['label' => 'Entered By', 'default' => false],
+        ],
+
+        'income' => [
+            'income_date'          => ['label' => 'Date'],
+            'income_type'          => ['label' => 'Type'],
+            'income_invoice'       => ['label' => 'Invoice'],
+            'income_source'        => ['label' => 'What for', 'weight' => 3],
+            'income_category'      => ['label' => 'Category'],
+            'income_client'        => ['label' => 'Client', 'weight' => 2],
+            'income_amount'        => ['label' => 'Amount', 'format' => 'money'],
+            'income_currency_code' => ['label' => 'Currency'],
+            'income_method'        => ['label' => 'Payment Method'],
+            'income_reference'     => ['label' => 'Reference'],
+            'income_account'       => ['label' => 'Account'],
+            'income_online'        => ['label' => 'Paid Online'],
+        ],
+
+        'transactions' => [
+            'transaction_date'           => ['label' => 'Date'],
+            'transaction_account'        => ['label' => 'Account'],
+            'transaction_type'           => ['label' => 'Type'],
+            'transaction_what'           => ['label' => 'Who or What', 'weight' => 2],
+            'transaction_description'    => ['label' => 'Description', 'weight' => 3],
+            'transaction_other_account'  => ['label' => 'Transfer Account'],
+            'transaction_reference'      => ['label' => 'Reference'],
+            'transaction_category'       => ['label' => 'Category'],
+            'transaction_client'         => ['label' => 'Client', 'weight' => 2],
+            'transaction_payment_method' => ['label' => 'Payment Method'],
+            'transaction_in'             => ['label' => 'In', 'format' => 'money'],
+            'transaction_out'            => ['label' => 'Out', 'format' => 'money'],
+            'transaction_amount'         => ['label' => 'Amount', 'format' => 'money', 'default' => false],
+            'transaction_balance'        => ['label' => 'Balance', 'format' => 'money'],
+            'transaction_cleared'        => ['label' => 'Cleared', 'default' => false],
+        ],
+
+        'trips' => [
+            'trip_date'        => ['label' => 'Date'],
+            'user_name'        => ['label' => 'Driver', 'weight' => 2],
+            'trip_purpose'     => ['label' => 'Purpose', 'weight' => 3],
+            'trip_source'      => ['label' => 'From', 'weight' => 2],
+            'trip_destination' => ['label' => 'To', 'weight' => 2],
+            'trip_miles'       => ['label' => ucfirst(tripUnit()), 'format' => 'number'],
+            'round_trip_display' => ['label' => 'Round Trip', 'default' => false],
+            'trip_one_way'     => ['label' => 'One Way', 'format' => 'number', 'default' => false],
+            'client_name'      => ['label' => 'Client', 'weight' => 2, 'default' => false],
+            'location_name'    => ['label' => 'Site', 'weight' => 2, 'default' => false],
+            'ticket_display'   => ['label' => 'Ticket', 'weight' => 2, 'default' => false],
+            'trip_start_odometer' => ['label' => 'Odometer Start', 'default' => false],
+            'trip_end_odometer' => ['label' => 'Odometer End', 'default' => false],
+            'vehicle_display'  => ['label' => 'Vehicle', 'default' => false],
+            'paid_back_display' => ['label' => 'Paid Back', 'weight' => 2, 'default' => false],
+            'billing_display'  => ['label' => 'Billing', 'weight' => 2, 'default' => false],
+        ],
+
+        // user_status_display is the status word, built by the handler
+        'users' => [
+            'user_name'          => ['label' => 'Name', 'weight' => 2],
+            'user_email'         => ['label' => 'Email', 'weight' => 2],
+            'role_name'          => ['label' => 'Role'],
+            'user_status_display' => ['label' => 'Status'],
+            'user_mfa_display'   => ['label' => 'MFA'],
+            'user_last_login'    => ['label' => 'Last Sign In'],
+            'user_client_access' => ['label' => 'Client Access', 'weight' => 2, 'default' => false],
+            'user_created_at'    => ['label' => 'Creation Date'],
+        ],
+
+        // Audit log entries - handler adds who did it, the record and the device (functions/audit_log.php)
+        'audit_logs' => [
+            'log_created_at'     => ['label' => 'When'],
+            'audit_who'          => ['label' => 'Who'],
+            'user_email'         => ['label' => 'Email', 'default' => false],
+            'client_name'        => ['label' => 'Client'],
+            'log_type'           => ['label' => 'Type'],
+            'log_action'         => ['label' => 'Action'],
+            'log_description'    => ['label' => 'Description', 'weight' => 3],
+            'audit_record'       => ['label' => 'Record', 'weight' => 2, 'default' => false],
+            'log_ip'             => ['label' => 'IP Address'],
+            'audit_device'       => ['label' => 'Device'],
+            'log_user_agent'     => ['label' => 'User Agent', 'weight' => 2, 'default' => false],
+            'log_id'             => ['label' => 'Entry', 'default' => false],
+        ],
+
+        'app_logs' => [
+            'app_log_created_at' => ['label' => 'When'],
+            'app_log_type'       => ['label' => 'Level'],
+            'app_log_category'   => ['label' => 'Category'],
+            'app_log_details'    => ['label' => 'Details', 'weight' => 4],
+            'app_log_id'         => ['label' => 'Entry', 'default' => false],
+        ],
+
+    ];
+
+    // An asset's details, a column each - off until picked (ASSET_SPECS, functions/asset_type.php)
+    if ($export_type === 'assets' && defined('ASSET_SPECS')) {
+        foreach (ASSET_SPECS as $spec_key => $spec) {
+            $registry['assets']['spec_' . $spec_key] = ['label' => $spec['label'] . (isset($spec['unit']) ? ' (' . $spec['unit'] . ')' : ''), 'default' => false];
+        }
+    }
+
+    return $registry[$export_type] ?? [];
+}
+
+/*
+ * Which columns the modal ticked, whitelisted against the registry.
+ * Registry order always wins, so the file layout is stable no matter what order
+ * the checkboxes came back in. Nothing ticked (or no picker on the form) falls
+ * back to the export's defaults.
+ */
+function resolveExportColumns($export_type) {
+
+    $available = getExportColumns($export_type);
+    if (empty($available)) {
+        return [];
+    }
+
+    $requested = $_POST['columns'] ?? [];
+    if (!is_array($requested)) {
+        $requested = [];
+    }
+
+    $selected = [];
+    foreach ($available as $key => $column) {
+        if (in_array($key, $requested, true)) {
+            $selected[$key] = $column;
+        }
+    }
+
+    if (empty($selected)) {
+        foreach ($available as $key => $column) {
+            if ($column['default'] ?? true) {
+                $selected[$key] = $column;
+            }
+        }
+    }
+
+    return $selected;
+}
+
+/*
+ * The export buttons post their format as the value of the trigger, so
+ * $_POST['export_assets'] is the string 'csv' or 'pdf'. Anything else is CSV.
+ */
+function resolveExportFormat($format) {
+    return ($format === 'pdf') ? 'pdf' : 'csv';
+}
+
+/*
+ * The gate every export handler opens on. Keying on isset() alone means any other
+ * field that happens to share the trigger's name fires the export - the client PDF
+ * pack's section checkboxes (export_assets=1, export_contacts=1, ...) did exactly
+ * that, and since post.php loads every handler, the first match won and streamed a
+ * CSV instead. Only 'csv' or 'pdf' - what renderExportButtons() posts - counts.
+ */
+function isExportRequest($trigger) {
+    return isset($_POST[$trigger]) && in_array($_POST[$trigger], ['csv', 'pdf'], true);
+}
+
+/*
+ * Filters that match nothing say so and go back to the list - the export form
+ * posts straight to post.php, so returning nothing left a blank page there.
+ * Call it once the row count is known, before beginExport().
+ */
+function guardExportHasRows($num_rows, $what) {
+    if ($num_rows < 1) {
+        flashAlert("No $what match - nothing to export.", 'error');
+        redirect();
+    }
+}
+
+/*
+ * PDF is capped - see EXPORT_PDF_MAX_ROWS. Call this after the row count is known
+ * and before beginExport(); it redirects rather than returning on refusal.
+ */
+function guardExportPdfRowCount($format, $num_rows) {
+    if (resolveExportFormat($format) === 'pdf' && $num_rows > EXPORT_PDF_MAX_ROWS) {
+        flashAlert("That's " . number_format($num_rows) . " rows - too many for a PDF. Narrow the filters or export to CSV instead.", 'error');
+        redirect();
+    }
+}
+
+/*
+ * Presentation only. CSV keeps numbers raw so spreadsheets and importers still
+ * see a number; the PDF is for reading, so it gets thousands separators.
+ */
+function formatExportValue($value, $format, $output, $row = [], $field = '') {
+
+    // An empty field is empty, whatever its format - a blank amount is not 0.00
+    if ($value === null || $value === '') {
+        return '';
+    }
+
+    if ($format === 'phone') {
+        // Every phone column in the schema is paired with <column>_country_code,
+        // and the export queries all select the table wholesale, so the code is
+        // already in the row - it just was not reachable from here before.
+        return formatPhoneNumber($value, $row[$field . '_country_code'] ?? '');
+    }
+
+    if ($output === 'pdf' && $format === 'money') {
+        return number_format(floatval($value), 2);
+    }
+
+    if ($output === 'pdf' && $format === 'number') {
+        return rtrim(rtrim(number_format(floatval($value), 2), '0'), '.');
+    }
+
+    return $value;
+}
+
+/*
+ * Renders the column picker into an export modal. Drop it in the modal body:
+ *
+ *     <?php renderExportColumnPicker('assets'); ?>
+ *
+ * Posts back as columns[]. Silently renders nothing for an export type that has
+ * no registry entry yet, so a half-converted modal still works.
+ */
+function renderExportColumnPicker($export_type) {
+
+    $available = getExportColumns($export_type);
+    if (empty($available)) {
+        return;
+    }
+
+    // Modals get appended to the DOM, so the container id has to be unique per instance
+    static $instance = 0;
+    $instance++;
+    $picker_id = 'exportColumns' . $instance;
+
+    ?>
+
+    <div class="mb-3">
+        <label class="d-flex justify-content-between align-items-center">
+            <span>Columns</span>
+            <span>
+                <button type="button" class="btn btn-link btn-sm p-0 me-2 export-columns-all">Select all</button>
+                <button type="button" class="btn btn-link btn-sm p-0 export-columns-none">None</button>
+            </span>
+        </label>
+        <div id="<?= $picker_id ?>" class="export-column-picker border rounded p-2" style="max-height: 220px; overflow-y: auto;">
+            <div class="row">
+                <?php foreach ($available as $column_key => $column) { ?>
+                    <div class="col-md-6">
+                        <label class="d-block mb-1 fw-normal text-truncate" title="<?= escapeHtml($column['label']) ?>">
+                            <input class="form-check-input" type="checkbox" name="columns[]" value="<?= $column_key ?>" <?php if ($column['default'] ?? true) { echo 'checked'; } ?>>
+                            <?= escapeHtml($column['label']) ?>
+                        </label>
+                    </div>
+                <?php } ?>
+            </div>
+        </div>
+        <small class="form-text text-muted export-columns-count"></small>
+    </div>
+
+    <script>
+    (function () {
+        var picker = document.getElementById('<?= $picker_id ?>');
+        if (!picker) {
+            return;
+        }
+
+        // Everything is looked up relative to the picker's own form group, so several
+        // pickers on one page - or several modals in a session - never cross wires
+        var group = picker.parentNode;
+        var boxes = picker.querySelectorAll('input[name="columns[]"]');
+        var counter = group.querySelector('.export-columns-count');
+        var form = picker.closest('form');
+
+        function setAll(state) {
+            for (var i = 0; i < boxes.length; i++) {
+                boxes[i].checked = state;
+            }
+            update();
+        }
+
+        function update() {
+            var checked = picker.querySelectorAll('input[name="columns[]"]:checked').length;
+            counter.classList.remove('text-danger');
+            counter.textContent = checked + ' of ' + boxes.length + ' columns selected'
+                + (checked > 10 ? ' - a lot for a PDF, CSV will read better' : '');
+        }
+
+        picker.addEventListener('change', update);
+        group.querySelector('.export-columns-all').addEventListener('click', function () { setAll(true); });
+        group.querySelector('.export-columns-none').addEventListener('click', function () { setAll(false); });
+
+        // An empty selection would silently fall back to the defaults server side -
+        // stop it here so the choice stays the user's
+        if (form) {
+            form.addEventListener('submit', function (e) {
+                if (picker.querySelectorAll('input[name="columns[]"]:checked').length === 0) {
+                    e.preventDefault();
+                    counter.textContent = 'Select at least one column to export';
+                    counter.classList.add('text-danger');
+                }
+            });
+        }
+
+        update();
+    })();
+    </script>
+
+    <?php
+}
+
+/*
+ * Builds the export modal's data-modal-url with the page's current filters attached,
+ * so the list page doesn't need a hand-rolled query string per export button:
+ *
+ *     data-modal-url="<?= buildExportModalUrl('modals/asset/asset_export.php', ['client_id', 'type', 'q']) ?>"
+ *
+ * Empty params are dropped and array params (tags[], status[]) survive. The return
+ * value is escaped for use in an HTML attribute.
+ */
+function buildExportModalUrl($modal_path, $names, $extra = []) {
+
+    $params = [];
+    foreach ($names as $name) {
+        if (!isset($_GET[$name]) || $_GET[$name] === '' || $_GET[$name] === []) {
+            continue;
+        }
+        $params[$name] = $_GET[$name];
+    }
+
+    // Filters the page derived rather than read straight off the query string -
+    // filter_header.php's canned date ranges being the main one
+    foreach ($extra as $name => $value) {
+        if ($value !== '' && $value !== null && $value !== []) {
+            $params[$name] = $value;
+        }
+    }
+
+    if (empty($params)) {
+        return escapeHtml($modal_path);
+    }
+
+    return escapeHtml($modal_path . '?' . http_build_query($params));
+}
+
+/*
+ * filter_header.php falls back to 1970-01-01 / 2099-12-31 when no date range is
+ * chosen, so a naive summary would claim a filter that isn't really there.
+ * Returns '' for the all-time case, otherwise a readable range.
+ */
+function formatExportDateRange($date_from, $date_to) {
+
+    $all_time_from = ($date_from === '' || $date_from === null || $date_from === '1970-01-01' || $date_from === '0000-00-00');
+    $all_time_to = ($date_to === '' || $date_to === null || $date_to === '2099-12-31' || $date_to === '9999-00-00');
+
+    if ($all_time_from && $all_time_to) {
+        return '';
+    }
+
+    return $date_from . ' to ' . $date_to;
+}
+
+/*
+ * The name of a client an export is filtered to, for its summary - only a
+ * client this agent can reach; '' otherwise, so a made-up filter can't be
+ * used to read another client's name (the rows are scoped all the same).
+ */
+function exportClientName($client_id) {
+    $client_id = intval($client_id);
+    return $client_id && hasClientAccess($client_id) ? (string) getFieldById('clients', $client_id, 'client_name') : '';
+}
+
+/**
+ * The same for a record an export is filtered to (a site, a project, a vendor) - its $name_column
+ * when it belongs to no client (the company's own, which every agent sees) or to one this agent can reach.
+ */
+function exportRecordName($table, $id, $name_column, $client_column) {
+    $id = intval($id);
+    if (!$id) {
+        return '';
+    }
+    $client_id = getFieldById($table, $id, $client_column);
+    if ($client_id === null || $client_id === false || $client_id === '' || (intval($client_id) && !hasClientAccess($client_id))) {
+        return '';
+    }
+    return (string) getFieldById($table, $id, $name_column);
+}
+
+/*
+ * Human-readable one-liner of the same thing, for the PDF subtitle.
+ */
+function summarizeExportFilters($filters) {
+
+    $parts = [];
+    foreach ($filters as $label => $value) {
+        if ($value !== '' && $value !== null) {
+            $parts[] = $label . ': ' . $value;
+        }
+    }
+
+    return empty($parts) ? '' : 'Filters - ' . implode(' | ', $parts);
+}
+
+/*
+ * The tabbed shell every export modal uses - Filters on the first pane, Columns on the
+ * second, same pill nav as the add-client modal. Ids are per-instance because modals are
+ * appended to the DOM rather than living in the page.
+ *
+ * Sits between the modal header and the form:
+ *
+ *     <?php exportTabsNav(); ?>
+ *     <form ...>
+ *         <div class="modal-body">
+ *             <?php exportTabsFiltersOpen(); ?>
+ *                 ...filter controls...
+ *             <?php exportTabsColumns('assets'); ?>
+ *         </div>
+ *
+ * exportTabsColumns() closes the filters pane, renders the picker in the second pane and
+ * closes the tab content, so the modal body needs nothing else.
+ */
+function exportTabsId() {
+    static $instance = 0;
+    static $current = '';
+    if (func_num_args() > 0 && func_get_arg(0) === 'next') {
+        $instance++;
+        $current = 'exportTab' . $instance;
+    }
+    return $current;
+}
+
+function exportTabsNav($filters_label = 'Filters') {
+    $id = exportTabsId('next');
+    ?>
+    <ul class="modal-header nav nav-pills nav-justified">
+        <li class="nav-item">
+            <a class="nav-link active" data-bs-toggle="pill" href="#<?= $id ?>-filters"><?= escapeHtml($filters_label) ?></a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" data-bs-toggle="pill" href="#<?= $id ?>-columns">Columns</a>
+        </li>
+    </ul>
+    <?php
+}
+
+function exportTabsFiltersOpen() {
+    $id = exportTabsId();
+    ?>
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="<?= $id ?>-filters">
+    <?php
+}
+
+function exportTabsColumns($export_type) {
+    $id = exportTabsId();
+    ?>
+        </div>
+        <div class="tab-pane fade" id="<?= $id ?>-columns">
+            <?php renderExportColumnPicker($export_type); ?>
+        </div>
+    </div>
+    <?php
+}
+
+/*
+ * Renders the CSV / PDF submit pair for an export modal footer.
+ * $trigger is the POST key the handler keys on, e.g. 'export_assets'.
+ */
+function renderExportButtons($trigger) {
+    ?>
+    <button type="submit" name="<?= $trigger ?>" value="csv" class="btn btn-primary text-bold"><i class="fas fa-fw fa-file-csv me-2"></i>Download CSV</button>
+    <button type="submit" name="<?= $trigger ?>" value="pdf" class="btn btn-secondary text-bold"><i class="fas fa-fw fa-file-pdf me-2"></i>Download PDF</button>
+    <button type="button" class="btn btn-light" data-bs-dismiss="modal"><i class="fas fa-times me-2"></i>Cancel</button>
+    <?php
+}
+
+/*
+ * Opens an export. $filename_base is everything before the timestamp, e.g.
+ * "Acme Inc-Assets"; the date and extension are appended here.
+ * $subtitle is the human summary of the filters in play - it prints under the
+ * title in the PDF and is ignored for CSV.
+ */
+function beginExport($export_type, $format, $filename_base, $title = '', $subtitle = '') {
+
+    $format = resolveExportFormat($format);
+    $columns = resolveExportColumns($export_type);
+
+    $export = [
+        'format'   => $format,
+        'columns'  => $columns,
+        'title'    => $title,
+        'subtitle' => $subtitle,
+        'filename' => sanitizeFilename($filename_base . '-' . date('Y-m-d_H-i-s') . '.' . $format),
+        'rows'     => 0,
+        'fp'       => null,
+        'body'     => '',
+        'widths'   => [],
+        'missing'  => [],
+    ];
+
+    if ($format === 'csv') {
+        $export['fp'] = fopen('php://memory', 'w');
+        fputcsv($export['fp'], array_column($columns, 'label'), ',', '"', '\\');
+    } else {
+        // TCPDF sizes a table from the cells it sees, so every row needs the widths -
+        // putting them on the header alone leaves the body offset from its headings
+        $total_weight = 0;
+        foreach ($columns as $column) {
+            $total_weight += $column['weight'] ?? 1;
+        }
+        foreach ($columns as $column_key => $column) {
+            $export['widths'][$column_key] = round((($column['weight'] ?? 1) / $total_weight) * 100, 2);
+        }
+    }
+
+    return $export;
+}
+
+/*
+ * One row. $row is a plain associative array - normally straight out of
+ * mysqli_fetch_assoc(), with any handler-computed keys already set on it.
+ */
+function addExportRow(&$export, $row) {
+
+    $export['rows']++;
+
+    $values = [];
+    foreach ($export['columns'] as $column_key => $column) {
+        $field = $column['field'] ?? $column_key;
+
+        // A selected column whose field the query never returned would otherwise be a
+        // silently blank column all the way down - note it so finishExport can shout
+        if (!array_key_exists($field, $row)) {
+            $export['missing'][$field] = true;
+        }
+
+        $values[$column_key] = formatExportValue($row[$field] ?? '', $column['format'] ?? '', $export['format'], $row, $field);
+    }
+
+    if ($export['format'] === 'csv') {
+        fputcsv($export['fp'], array_map('escapeCsvFormula', $values), ',', '"', '\\');
+        return;
+    }
+
+    // PDF - buffer the row, the document is assembled in finishExport()
+    $stripe = ($export['rows'] % 2 === 0) ? ' bgcolor="#f4f4f4"' : '';
+    $cells = '';
+    foreach ($export['columns'] as $column_key => $column) {
+        $align = in_array($column['format'] ?? '', ['money', 'number'], true) ? 'right' : 'left';
+        $width = $export['widths'][$column_key] ?? 0;
+
+        // Blank cells read as a mistake in a printed table - an explicit dash doesn't
+        $cell = ($values[$column_key] === '') ? '-' : escapeHtml($values[$column_key]);
+
+        $cells .= '<td width="' . $width . '%" align="' . $align . '">' . $cell . '</td>';
+    }
+    $export['body'] .= '<tr' . $stripe . '>' . $cells . '</tr>';
+}
+
+/*
+ * A column whose field the query never selected produces a blank column rather than an
+ * error, which is exactly the kind of thing that ships unnoticed. Nothing is shown to
+ * the user - the file is still valid - but it lands in the PHP error log where a
+ * conversion mistake will be spotted.
+ */
+function reportMissingExportFields(&$export) {
+    if (!empty($export['missing'])) {
+        error_log('ITFlow export: no such field in result set for column(s): ' . implode(', ', array_keys($export['missing'])));
+    }
+}
+
+/*
+ * Streams the finished file. Sends its own headers, so nothing may be echoed
+ * before it; the caller still owns the logAudit() call and the exit.
+ */
+function finishExport(&$export) {
+
+    global $session_company_name;
+
+    reportMissingExportFields($export);
+
+    if ($export['format'] === 'csv') {
+        fseek($export['fp'], 0);
+        header('Content-Type: text/csv');
+        header('Content-Disposition: attachment; filename="' . $export['filename'] . '";');
+        fpassthru($export['fp']);
+        fclose($export['fp']);
+        return $export['rows'];
+    }
+
+    require_once __DIR__ . '/../libs/TCPDF/tcpdf.php';
+
+    $column_count = count($export['columns']);
+
+    // Anything past a handful of columns needs the long edge
+    $orientation = $column_count > 5 ? 'L' : 'P';
+
+    // Shrink type as columns pile up rather than letting TCPDF wrap every cell
+    if ($column_count <= 6) {
+        $font_size = 8;
+    } elseif ($column_count <= 9) {
+        $font_size = 7;
+    } elseif ($column_count <= 12) {
+        $font_size = 6;
+    } else {
+        $font_size = 5;
+    }
+
+    $pdf = new TCPDF($orientation, 'mm', 'A4', true, 'UTF-8', false);
+    $pdf->SetCreator(PDF_CREATOR);
+    $pdf->SetAuthor($session_company_name);
+    $pdf->SetTitle($export['title']);
+    $pdf->SetPrintHeader(false);
+    $pdf->SetMargins(8, 8, 8);
+    $pdf->SetAutoPageBreak(true, 12);
+    $pdf->AddPage();
+    $pdf->SetFont('freeserif', '', $font_size);
+
+    // Same widths the body rows used - see beginExport()
+    $head = '';
+    foreach ($export['columns'] as $column_key => $column) {
+        $width = $export['widths'][$column_key] ?? 0;
+        $head .= '<th width="' . $width . '%">' . escapeHtml($column['label']) . '</th>';
+    }
+
+    $html = '
+    <style>
+        h1 { font-size: ' . ($font_size + 6) . 'pt; margin: 0; }
+        p.meta { font-size: ' . $font_size . 'pt; color: #555555; margin: 2px 0 0 0; }
+        table { width: 100%; border-collapse: collapse; }
+        table, th, td { border: 0.5px solid #999999; }
+        th { background-color: #343a40; color: #ffffff; text-align: left; font-weight: bold; padding: 3px; }
+        td { padding: 3px; }
+        thead { display: table-header-group; }
+    </style>
+    <h1>' . escapeHtml($export['title']) . '</h1>
+    <p class="meta">' . escapeHtml($session_company_name) . '</p>';
+
+    if (!empty($export['subtitle'])) {
+        $html .= '<p class="meta">' . escapeHtml($export['subtitle']) . '</p>';
+    }
+
+    $html .= '<p class="meta">' . $export['rows'] . ' record(s) - generated ' . date('Y-m-d H:i') . '</p><br>
+    <table cellspacing="0" cellpadding="2">
+        <thead><tr>' . $head . '</tr></thead>
+        <tbody>' . $export['body'] . '</tbody>
+    </table>';
+
+    $pdf->writeHTML($html, true, false, true, false, '');
+    $pdf->Output($export['filename'], 'D');
+
+    return $export['rows'];
+}

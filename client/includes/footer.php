@@ -5,65 +5,53 @@
  */
 ?>
 
-<!-- Close container -->
-</div>
+</main>
 
-<br>
-<hr>
+<?php /* The body is a flex column (header.php), so mt-auto here takes up the
+         height a short page leaves and the bar sits on the bottom of the
+         window rather than right under the content. On a phone it clears the
+         tab bar along the bottom. */ ?>
+<footer class="itflow-portal-footer mt-auto">
+    <div class="container d-flex flex-wrap justify-content-between gap-2">
+        <span><?= escapeHtml($session_company_name) ?></span>
+        <?php if (!$config_whitelabel_enabled) { ?>
+            <span>Powered by ITFlow</span>
+        <?php } ?>
+    </div>
+</footer>
 
-<p class="text-center">
-    <?php
-        echo nullable_htmlentities($session_company_name);
-        if (!$config_whitelabel_enabled) {
-            echo '<br><small class="text-muted">Powered by ITFlow</small>';
-        }
-    ?>
-</p>
+<script src="/js/itflow_select.js"></script>
+<script src="/libs/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="/js/bootstrap_defaults.js"></script>
+<script src="/js/http.js"></script>
 
+<!--- TinyMCE - set up on any .tinymce by js/portal.js -->
+<script src="/libs/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
 
-<?php require_once "../includes/inc_confirm_modal.php"; ?>
+<script src="/js/pretty_content.js"></script>
 
-<!-- jQuery -->
-<script src="../plugins/jquery/jquery.min.js"></script>
+<script src="/libs/sweetalert2/js/sweetalert2.min.js"></script>
+<script src="/js/confirm_modal.js"></script>
+<script src="/js/autosubmit.js"></script>
 
-<!-- Bootstrap 4 -->
-<script src="../plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
+<?php if (!empty($portal_load_phone_inputs)) { ?>
+    <script src="/libs/intl-tel-input/js/intlTelInputWithUtils.min.js"></script>
+    <script src="/js/phone_inputs.js"></script>
+<?php } ?>
 
-<!--- TinyMCE -->
-<script src="../plugins/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
+<?php if (!empty($portal_load_datatables)) { ?>
+    <script src="/libs/DataTables/datatables.min.js"></script>
+    <script src="/js/portal_datatables.js"></script>
+<?php } ?>
 
-<script>
-    
-    // Initialize TinyMCE
-    tinymce.init({
-        selector: '.tinymce',
-        browser_spellcheck: true,
-        resize: true,
-        min_height: 300,
-        max_height: 600,
-        promotion: false,
-        branding: false,
-        menubar: false,
-        statusbar: false,
-        toolbar: [
-            { name: 'styles', items: [ 'styles' ] },
-            { name: 'formatting', items: [ 'bold', 'italic', 'forecolor' ] },
-            { name: 'lists', items: [ 'bullist', 'numlist' ] },
-            { name: 'alignment', items: [ 'alignleft', 'aligncenter', 'alignright', 'alignjustify' ] },
-            { name: 'indentation', items: [ 'outdent', 'indent' ] },
-            { name: 'table', items: [ 'table' ] },
-            { name: 'extra', items: [ 'fullscreen' ] }
-        ],
-        mobile: {
-        menubar: false,
-        plugins: 'autosave lists autolink',
-        toolbar: 'undo bold italic styles'
-    },
-        plugins: 'link image lists table code codesample fullscreen autoresize',
-    });
+<script src="/js/keepalive.js"></script>
+<script src="/js/portal.js"></script>
 
-</script>
+<?php if (!empty($portal_stripe)) { ?>
+    <!-- Taking a card - Stripe's own script, then the portal's use of it -->
+    <script src="https://js.stripe.com/v3/"></script>
+    <script src="/js/portal_stripe.js"></script>
+<?php } ?>
 
-<script src="../js/pretty_content.js"></script>
-
-<script src="../js/confirm_modal.js"></script>
+</body>
+</html>

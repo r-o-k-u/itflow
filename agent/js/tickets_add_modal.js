@@ -1,0 +1,512 @@
+// Used to populate dynamic content in the ticket and recurring ticket add modals based on selected client
+
+// Not every modal that loads this script has every dropdown, and a modal opened
+// from a contact page has no client selector at all - the client arrives as a
+// hidden field. Everything below therefore checks that an element exists before
+// touching it, rather than assuming the full set is present.
+
+// Client selected listener
+
+// Wrapped in an IIFE because a modal can be opened, closed and opened again in one
+// page load, which re-runs this file - a top-level const would throw on the second
+// run and take the whole script with it.
+
+(function () {
+
+    const clientSelectDropdown = document.getElementById("changeClientSelect"); // Define client selector
+
+    // What each asset is assigned to and where it is, and where each contact
+    // sits - so picking an asset fills in its person and site, and picking a
+    // person their site, unless the agent has already picked those themselves
+    const assetLinks = {};
+    const contactLocations = {};
+    const touched = {};
+    let pending = 0;
+
+    function field(id) {
+        return document.getElementById(id);
+    }
+
+    // Set a field to a value it offers - a value it doesn't have would blank it
+    function offer(id, value) {
+        const dropdown = field(id);
+        if (!dropdown || !value || value === '0' || touched[id]) {
+            return;
+        }
+        if (Array.prototype.some.call(dropdown.options, function (option) { return option.value === String(value); })) {
+            dropdown.value = String(value);
+        }
+    }
+
+    function fillFromAsset() {
+        const asset = field("assetSelect");
+        const links = asset ? assetLinks[asset.value] : null;
+        if (!links) {
+            return;
+        }
+        offer("contactSelect", links.contact);
+        offer("locationSelect", links.location || contactLocations[field("contactSelect") ? field("contactSelect").value : 0]);
+    }
+
+    function fillFromContact() {
+        const contact = field("contactSelect");
+        const location = field("locationSelect");
+        if (contact && location && location.value === '0') {
+            offer("locationSelect", contactLocations[contact.value]);
+        }
+    }
+
+    function currentClientId() {
+        if (clientSelectDropdown) {
+            return clientSelectDropdown.value;
+        }
+        const hidden = field("clientIdHidden");
+        return hidden ? hidden.value : '';
+    }
+
+    // The other open tickets for the person or device picked
+    function refreshAlsoOpen() {
+        const box = field("ticketAlsoOpen");
+        if (!box) {
+            return;
+        }
+        const contact = field("contactSelect");
+        const asset = field("assetSelect");
+        const client_id = currentClientId();
+        if (!client_id || ((!contact || contact.value === '0') && (!asset || !asset.value || asset.value === '0'))) {
+            box.innerHTML = '';
+            return;
+        }
+        itflowGet("ajax.php", {
+            ticket_also_open: 1,
+            client_id: client_id,
+            contact_id: contact ? contact.value : 0,
+            asset_id: asset ? asset.value : 0
+        }, function (data) {
+            try {
+                box.innerHTML = JSON.parse(data).html || '';
+            } catch (e) {
+                box.innerHTML = '';
+            }
+        });
+    }
+
+    ["contactSelect", "assetSelect", "locationSelect"].forEach(function (id) {
+        const dropdown = field(id);
+        if (!dropdown) {
+            return;
+        }
+        // A change event is a pick - setting .value from here fires none
+        dropdown.addEventListener('change', function () {
+            touched[id] = true;
+            if (id === "assetSelect") {
+                fillFromAsset();
+            } else if (id === "contactSelect") {
+                fillFromContact();
+            }
+            refreshAlsoOpen();
+        });
+    });
+
+    // Once every list for the client is in: a modal opened for an asset gets its person and site
+    function loaded() {
+        pending--;
+        if (pending > 0) {
+            return;
+        }
+        fillFromAsset();
+        fillFromContact();
+        refreshAlsoOpen();
+    }
+
+    if (clientSelectDropdown) {
+
+        // If the client selector is disabled, we must be on a client-specific page instead. Trigger the lists to update.
+        if (clientSelectDropdown.disabled) {
+
+            let client_id = clientSelectDropdown.value;
+
+            populateLists(client_id);
+        }
+
+        // Listener for client selection. Populate select lists when a client is selected
+        clientSelectDropdown.addEventListener('change', function () {
+            let client_id = this.value;
+
+            // Update the dependent dropdown lists
+            populateLists(client_id);
+
+        });
+
+    } else {
+
+        // No client selector - the modal was opened from a contact page, where the
+        // client is fixed and arrives as a hidden field instead
+        const clientIdHiddenField = document.getElementById("clientIdHidden");
+
+        if (clientIdHiddenField && clientIdHiddenField.value) {
+            populateLists(clientIdHiddenField.value);
+        }
+
+    }
+
+    // Populates dropdowns with dynamic content based on the client ID
+    //  Called when the client select dropdown is used or if the client select is disabled
+    function populateLists(client_id) {
+
+        // A new client starts over - nothing picked for it yet
+        Object.keys(touched).forEach(function (id) { delete touched[id]; });
+        pending = 0;
+        const alsoOpen = field("ticketAlsoOpen");
+        if (alsoOpen) {
+            alsoOpen.innerHTML = '';
+        }
+
+        populateContactsDropdown(client_id);
+
+        populateAssetsDropdowns(client_id);
+
+        populateLocationsDropdown(client_id);
+
+        populateVendorsDropdown(client_id);
+
+        populateProjectsDropdown(client_id);
+    }
+
+    // Empties a dropdown and adds its placeholder, returning the element - or null if
+    // this modal doesn't have it. Pass null as the label for a multi-select, which has
+    // no placeholder option of its own.
+    function resetDropdown(id, placeholderLabel, placeholderValue) {
+
+        const dropdown = document.getElementById(id);
+
+        if (!dropdown) {
+            return null;
+        }
+
+        // innerHTML rather than removing options one by one, which leaves empty
+        // optgroups behind. The picker (js/itflow_select.js) redraws by itself.
+        dropdown.innerHTML = '';
+
+        if (placeholderLabel !== null) {
+            dropdown[dropdown.length] = new Option(placeholderLabel, placeholderValue);
+        }
+
+        return dropdown;
+    }
+
+    // Re-applies the value the modal was opened with (e.g. ticket_add.php?project_id=4),
+    // which can only be selected once the options it refers to exist
+    function applyPreselection(dropdown) {
+
+        if (!hasPreselection(dropdown)) {
+            return;
+        }
+
+        dropdown.value = dropdown.dataset.selected;
+
+        // What the modal was opened for counts as picked
+        touched[dropdown.id] = true;
+    }
+
+    // True when the modal was opened with a specific value for this dropdown.
+    // '0' is the "none selected" value every one of these dropdowns uses, and is
+    // truthy as a string - so it has to be excluded explicitly.
+    function hasPreselection(dropdown) {
+        return Boolean(dropdown && dropdown.dataset.selected && dropdown.dataset.selected !== '0');
+    }
+
+    // Adds an optgroup to a dropdown and returns it, so options can be appended into it
+    function appendOptionGroup(dropdown, label) {
+
+        if (!dropdown) {
+            return null;
+        }
+
+        const group = document.createElement("optgroup");
+        group.label = label;
+        dropdown.appendChild(group);
+
+        return group;
+    }
+
+    // Adds an option to an optgroup
+    function appendGroupedOption(group, label, value, icon) {
+
+        if (!group) {
+            return;
+        }
+
+        const option = new Option(label, value);
+        if (icon) {
+            option.dataset.icon = 'fas fa-fw fa-' + icon;
+        }
+        group.appendChild(option);
+    }
+
+    // Builds the asset label as "Name - Make Model - (Contact)", matching how assets read elsewhere
+    function buildAssetLabel(asset) {
+
+        let label = asset.asset_name;
+
+        if (asset.asset_make) {
+            label = label + " - " + asset.asset_make;
+
+            if (asset.asset_model) {
+                label = label + " " + asset.asset_model;
+            }
+        }
+
+        if (asset.contact_name) {
+            label = label + " - (" + asset.contact_name + ")";
+        }
+
+        return label;
+    }
+
+    // Populate client contacts - one request feeds both the contact picker and the
+    // watchers list, as both are built from the same set of people
+    function populateContactsDropdown(client_id) {
+
+        if (!document.getElementById("contactSelect") && !document.getElementById("watchersSelect")) {
+            return;
+        }
+
+        pending++;
+
+        // Send a GET request to ajax.php as ajax.php?get_client_contacts=true&client_id=NUM
+        itflowGet(
+            "ajax.php",
+            {get_client_contacts: 'true', client_id: client_id},
+            function(data) {
+
+                // If we get a response from ajax.php, parse it as JSON
+                const response = JSON.parse(data);
+
+                // Access the data for contacts (multiple)
+                const contacts = response.contacts || [];
+
+                // Contacts dropdown
+                const contactSelectDropdown = resetDropdown("contactSelect", '- No One -', '0');
+
+                // Watchers is a tags field - any address can be typed in, these are just the handy ones
+                const watchersDropdown = resetDropdown("watchersSelect", null, null);
+
+                // Populate dropdown - the name, with title and role on the line under it
+                contacts.forEach(contact => {
+                    contactLocations[contact.contact_id] = contact.contact_location_id;
+                    const details = [];
+                    if (contact.contact_title) {
+                        details.push(contact.contact_title);
+                    }
+                    if (contact.contact_primary == "1") {
+                        details.push("Primary");
+                    } else if (contact.contact_technical == "1") {
+                        details.push("Technical");
+                    }
+
+                    if (contactSelectDropdown) {
+                        const option = new Option(contact.contact_name, contact.contact_id);
+                        option.dataset.description = details.join(' · ');
+                        option.dataset.initials = contact.contact_initials;
+                        option.dataset.shape = 'circle';
+                        option.dataset.tone = contact.contact_tone || 'secondary';
+                        option.dataset.soft = '1';
+                        if (contact.contact_photo_url) {
+                            option.dataset.image = contact.contact_photo_url;
+                        }
+                        contactSelectDropdown[contactSelectDropdown.length] = option;
+                    }
+
+                    if (watchersDropdown && contact.contact_email) {
+                        watchersDropdown[watchersDropdown.length] = new Option(contact.contact_email, contact.contact_email);
+                    }
+                });
+
+                // Default to the client's primary contact unless the modal was opened for a
+                // specific one. Contacts arrive primary-first.
+                if (contactSelectDropdown && !hasPreselection(contactSelectDropdown)) {
+                    const primaryContact = contacts.find(contact => contact.contact_primary == "1");
+
+                    if (primaryContact) {
+                        contactSelectDropdown.value = primaryContact.contact_id;
+                    }
+                }
+
+                applyPreselection(contactSelectDropdown);
+
+                loaded();
+
+            },
+            loaded
+        );
+    }
+
+    // Populate client assets - feeds both the single asset picker and the additional assets
+    // multi-select from one request, as both need the same list
+    function populateAssetsDropdowns(client_id) {
+
+        if (!document.getElementById("assetSelect") && !document.getElementById("additionalAssetsSelect")) {
+            return;
+        }
+
+        pending++;
+
+        itflowGet(
+            "ajax.php",
+            {get_client_assets: 'true', client_id: client_id},
+            function(data) {
+
+                // If we get a response from ajax.php, parse it as JSON
+                const response = JSON.parse(data);
+
+                // Access the data for assets (multiple)
+                const assets = response.assets || [];
+
+                const assetSelectDropdown = resetDropdown("assetSelect", '- None -', '0');
+                const additionalAssetsDropdown = resetDropdown("additionalAssetsSelect", null, null);
+
+                // Assets arrive ordered by type, so a change of type starts a new group
+                let currentType = null;
+                let assetGroup = null;
+                let additionalAssetGroup = null;
+
+                assets.forEach(asset => {
+                    const assetType = asset.asset_type || 'Uncategorized';
+
+                    if (assetType !== currentType) {
+                        currentType = assetType;
+                        assetGroup = appendOptionGroup(assetSelectDropdown, assetType);
+                        additionalAssetGroup = appendOptionGroup(additionalAssetsDropdown, assetType);
+                    }
+
+                    assetLinks[asset.asset_id] = {contact: asset.asset_contact_id, location: asset.asset_location_id};
+
+                    const assetLabel = buildAssetLabel(asset);
+
+                    appendGroupedOption(assetGroup, assetLabel, asset.asset_id, asset.asset_icon);
+                    appendGroupedOption(additionalAssetGroup, assetLabel, asset.asset_id, asset.asset_icon);
+                });
+
+                applyPreselection(assetSelectDropdown);
+
+                loaded();
+
+            },
+            loaded
+        );
+    }
+
+    // Populate client locations
+    function populateLocationsDropdown(client_id) {
+
+        if (!document.getElementById("locationSelect")) {
+            return;
+        }
+
+        pending++;
+
+        itflowGet(
+            "ajax.php",
+            {get_client_locations: 'true', client_id: client_id},
+            function(data) {
+
+                // If we get a response from ajax.php, parse it as JSON
+                const response = JSON.parse(data);
+
+                // Access the data for locations (multiple)
+                const locations = response.locations || [];
+
+                // Locations dropdown
+                const locationSelectDropdown = resetDropdown("locationSelect", '- Location -', '0');
+
+                // Populate dropdown
+                locations.forEach(location => {
+                    locationSelectDropdown[locationSelectDropdown.length] = new Option(location.location_name, location.location_id);
+                });
+
+                applyPreselection(locationSelectDropdown);
+
+                loaded();
+
+            },
+            loaded
+        );
+    }
+
+    // Populate client vendors
+    function populateVendorsDropdown(client_id) {
+
+        if (!document.getElementById("vendorSelect")) {
+            return;
+        }
+
+        itflowGet(
+            "ajax.php",
+            {get_client_vendors: 'true', client_id: client_id},
+            function(data) {
+
+                // If we get a response from ajax.php, parse it as JSON
+                const response = JSON.parse(data);
+
+                // Access the data for vendors (multiple)
+                const vendors = response.vendors || [];
+
+                // Vendors dropdown
+                const vendorSelectDropdown = resetDropdown("vendorSelect", '- Vendor -', '0');
+
+                // Populate dropdown
+                vendors.forEach(vendor => {
+                    const option = new Option(vendor.vendor_name, vendor.vendor_id);
+                    // The vendor's tile and what they are, as on the vendor pages
+                    option.dataset.initials = vendor.vendor_initials || '';
+                    option.dataset.tone = vendor.vendor_tone || 'secondary';
+                    option.dataset.soft = '1';
+                    if (vendor.vendor_description) {
+                        option.dataset.description = vendor.vendor_description;
+                    }
+                    vendorSelectDropdown[vendorSelectDropdown.length] = option;
+                });
+
+                applyPreselection(vendorSelectDropdown);
+
+            }
+        );
+    }
+
+    // Populate client projects
+    function populateProjectsDropdown(client_id) {
+
+        if (!document.getElementById("projectSelect")) {
+            return;
+        }
+
+        itflowGet(
+            "ajax.php",
+            {get_client_projects: 'true', client_id: client_id},
+            function(data) {
+
+                // If we get a response from ajax.php, parse it as JSON
+                const response = JSON.parse(data);
+
+                // Access the data for projects (multiple)
+                const projects = response.projects || [];
+
+                // Projects dropdown
+                const projectSelectDropdown = resetDropdown("projectSelect", '- Select Project -', '0');
+
+                // Populate dropdown - the client's own, then our internal ones
+                projects.forEach(project => {
+                    const option = new Option(project.project_name, project.project_id);
+                    option.dataset.icon = 'fas fa-fw fa-project-diagram';
+                    option.dataset.description = (project.project_prefix || '') + project.project_number + (project.project_internal == '1' ? ' - internal' : '');
+                    projectSelectDropdown[projectSelectDropdown.length] = option;
+                });
+
+                applyPreselection(projectSelectDropdown);
+
+            }
+        );
+    }
+
+})();

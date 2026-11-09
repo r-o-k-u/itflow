@@ -1,0 +1,88 @@
+/* Ticket board - agent/ticket_kanban.php, js/tickets_kanban.js. The cards
+   themselves (.itflow-ticket-card) are in css/itflow_custom.css with the list. */
+
+/* Columns scroll sideways, each column on its own */
+.kanban-board {
+    display: flex;
+    align-items: flex-start;
+    gap: .75rem;
+    overflow-x: auto;
+    padding: 1rem;
+}
+
+.kanban-column {
+    flex: 0 0 18.5rem;
+    max-width: 18.5rem;
+    display: flex;
+    flex-direction: column;
+    max-height: calc(100vh - 16rem);
+    min-height: 10rem;
+    background-color: var(--bs-tertiary-bg);
+    border: 1px solid var(--bs-border-color-translucent);
+    border-radius: var(--bs-border-radius-lg);
+}
+
+/* The header - also the handle for moving a column, when the admin allows it */
+.kanban-column-header {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .65rem .75rem;
+    font-size: .875rem;
+    font-weight: 600;
+    border-bottom: 1px solid var(--bs-border-color-translucent);
+    user-select: none;
+}
+.kanban-board[data-moving-columns="1"][data-can-edit="1"] .kanban-column-header {
+    cursor: grab;
+}
+.kanban-column-dot {
+    flex: 0 0 auto;
+    width: .6rem;
+    height: .6rem;
+    border-radius: 50%;
+    background-color: var(--itflow-status-color, var(--bs-secondary));
+}
+
+/* The cards, scrolling inside the column */
+.kanban-status {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+    min-height: 4rem;
+    padding: .5rem;
+    overflow-y: auto;
+}
+.kanban-status:not(:has(.kanban-card))::after {
+    content: attr(data-empty);
+    padding: 1rem .5rem;
+    border: 1px dashed var(--bs-border-color);
+    border-radius: var(--bs-border-radius);
+    font-size: .8rem;
+    text-align: center;
+    color: var(--bs-secondary-color);
+}
+
+/* Dragging */
+.kanban-board[data-can-edit="1"] .kanban-card {
+    cursor: grab;
+}
+.kanban-card.sortable-ghost {
+    opacity: .35;
+}
+.kanban-card.sortable-chosen {
+    box-shadow: var(--bs-box-shadow);
+}
+.kanban-card.is-saving {
+    opacity: .6;
+    pointer-events: none;
+}
+
+@media (max-width: 767.98px) {
+    .kanban-column {
+        flex-basis: 16rem;
+        max-width: 16rem;
+        max-height: none;
+    }
+}

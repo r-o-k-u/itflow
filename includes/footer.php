@@ -1,45 +1,104 @@
 <?php
-require_once "inc_confirm_modal.php";
 ?>
 
-<?php
-if (str_contains(basename($_SERVER["PHP_SELF"]), "admin_")) { ?>
-    <p class="text-right font-weight-light">ITFlow <?php echo APP_VERSION ?> &nbsp; · &nbsp; <a target="_blank" href="https://docs.itflow.org">Docs</a> &nbsp; · &nbsp; <a target="_blank" href="https://forum.itflow.org">Forum</a> &nbsp; · &nbsp; <a target="_blank" href="https://services.itflow.org">Services</a></p>
-    <br>
+</div><!-- /.container-fluid -->
+</div> <!-- /.app-content -->
+</main> <!-- /.app-main -->
+
+<?php /* AdminLTE 4's .app-wrapper is a three row grid - header, main, footer -
+         and the footer row is already reserved (grid-template-rows:
+         min-content 1fr min-content). Sitting in that row is what pins this to
+         the bottom: the 1fr main row absorbs the leftover height, so on a short
+         page the bar lands on the bottom edge of the viewport instead of
+         floating directly under the content.
+
+         It has to be a direct child of .app-wrapper - inside .app-main it is
+         just content again. */ ?>
+<?php if (basename(dirname($_SERVER['REQUEST_URI'])) === 'admin') { ?>
+<footer class="app-footer py-2 d-flex align-items-center">
+    <div class="w-100 text-end fw-light">ITFlow <?= APP_VERSION ?> &nbsp; · &nbsp; <a target="_blank" href="https://docs.itflow.org">Docs</a> &nbsp; · &nbsp; <a target="_blank" href="https://forum.itflow.org">Forum</a> &nbsp; · &nbsp; <a target="_blank" href="https://services.itflow.org">Services</a></div>
+</footer>
 <?php } ?>
 
-</div><!-- /.container-fluid -->
-</div> <!-- /.content -->
-</div> <!-- /.content-wrapper -->
-</div> <!-- ./wrapper -->
+<?php /* The guest portal shares this file and the same .app-wrapper grid (its
+         own guest_header.php opens it), so its footer goes in the same row.
+         guest_header.php renders no .app-header and no .app-sidebar, which the
+         grid handles on its own - the sidebar column is `auto` and the header
+         row is min-content, so both collapse to zero and .app-main still takes
+         the 1fr. */ ?>
+<?php if (basename(dirname($_SERVER['REQUEST_URI'])) === 'guest') { ?>
+<footer class="app-footer py-2 text-center">
+    <?php
+        echo escapeHtml($session_company_name);
+        if (!$config_whitelabel_enabled) {
+            echo '<br><small class="text-muted">Powered by ITFlow</small>';
+        }
+    ?>
+</footer>
+<?php } ?>
+
+</div> <!-- /.app-wrapper -->
 
 <!-- Set the browser window title to the clients name -->
-<script>document.title = "<?php echo "$tab_title - $page_title"; ?>"</script>
+<script>document.title = <?= json_encode("$tab_title - $page_title") ?>;</script>
 
 <!-- REQUIRED SCRIPTS -->
 
-<!-- Bootstrap 4 -->
-<script src="plugins/bootstrap/js/bootstrap.bundle.min.js"></script>
+<?php /* The select picker goes FIRST, ahead of Bootstrap itself. Order is
+         load-bearing: until js/itflow_select.js runs, the browser is showing
+         the raw <select> controls it painted while parsing the body, so every
+         byte in front of it is time spent looking at the wrong widget. It
+         needs nothing else on the page, so nothing goes in front of it.
+         includes/header.php preloads it.
+
+         Bootstrap moving down is safe: it has always loaded in the footer, so
+         no markup above this point could ever have used the `bootstrap` global
+         at parse time. Every call site is inside an event handler or waits for
+         DOMContentLoaded - includes/inc_alert_feedback.php says so in its own
+         comment - and all of those still run well after this block. */ ?>
+<script src="/js/itflow_select.js"></script>
+
+<!-- Bootstrap 5 -->
+<script src="/libs/bootstrap/js/bootstrap.bundle.min.js"></script>
+<script src="/js/bootstrap_defaults.js"></script>
+<script src="/js/http.js"></script>
 
 <!-- Custom js-->
-<script src="plugins/moment/moment.min.js"></script>
-<script src="plugins/chart.js/Chart.min.js"></script>
-<script src="plugins/tempusdominus-bootstrap-4/js/tempusdominus-bootstrap-4.min.js"></script>
-<script src='plugins/daterangepicker/daterangepicker.js'></script>
-<script src='plugins/select2/js/select2.min.js'></script>
-<script src='plugins/inputmask/jquery.inputmask.min.js'></script>
-<script src="plugins/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
-<script src="plugins/Show-Hide-Passwords-Bootstrap-4/bootstrap-show-password.min.js"></script>
-<script src="plugins/clipboardjs/clipboard.min.js"></script>
-<script src="js/keepalive.js"></script>
-<script src="plugins/DataTables/datatables.min.js"></script>
-<script src="plugins/intl-tel-input/js/intlTelInput.min.js"></script>
+<script src="/libs/chart.js/chart.umd.min.js"></script>
+<script src="/libs/flatpickr/js/flatpickr.min.js"></script>
+<script src="/libs/imask/js/imask.min.js"></script>
+<script src="/libs/tinymce/tinymce.min.js" referrerpolicy="origin"></script>
+<script src="/js/keepalive.js"></script>
+<script src="/libs/DataTables/datatables.min.js"></script>
+<script src="/libs/intl-tel-input/js/intlTelInputWithUtils.min.js"></script>
+<script src="/js/phone_inputs.js"></script>
 
 <!-- AdminLTE App -->
-<script src="plugins/adminlte/js/adminlte.min.js"></script>
-<script src="js/app.js"></script>
-<script src="js/ajax_modal.js"></script>
-<script src="js/confirm_modal.js"></script>
+<script src="/libs/adminlte/js/adminlte.min.js"></script>
+<script src="/libs/sweetalert2/js/sweetalert2.min.js"></script>
+<script src="/js/autocomplete.js"></script>
+<?php /* What the editors' Reword button needs - false when AI isn't set up or the role may not use it (aiClientConfig(), functions/ai.php) */ ?>
+<?php
+// A page that closed the database before its footer (admin/debug.php does) gets no Reword, rather than a fatal error
+try {
+    $itflow_ai_config = function_exists('aiClientConfig') ? aiClientConfig() : false;
+} catch (Throwable $e) {
+    $itflow_ai_config = false;
+}
+?>
+<script>window.itflowAi = <?= json_encode($itflow_ai_config) ?>;</script>
+<script src="/js/app.js"></script>
+<script src="/js/credentials.js"></script>
+<script src="/js/tag_picker.js"></script>
+<script src="/js/quick_pick.js"></script>
+<script src="/js/ajax_modal.js"></script>
+<script src="/js/confirm_modal.js"></script>
+<script src="/js/date_filter.js"></script>
+<script src="/js/global_search.js"></script>
+<script src="/js/notifications.js"></script>
+<?php if (basename(dirname($_SERVER['REQUEST_URI'])) === 'admin') { ?>
+<script src="/js/settings.js"></script>
+<?php } ?>
 
 </body>
 </html>

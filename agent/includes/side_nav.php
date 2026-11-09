@@ -1,0 +1,307 @@
+<!-- Main Sidebar Container -->
+<aside class="app-sidebar shadow d-print-none" data-bs-theme="dark">
+
+    <?php
+    /*
+     * The company name goes to your own company's client record once one is designated in
+     * Admin > Settings > Company Details, and falls back to the dashboard otherwise. The
+     * access check keeps a restricted agent from being sent to a client they would only be
+     * bounced off, and costs no query - the permission arrays are already in the session.
+     */
+    $brand_link = "/agent/dashboard.php";
+    if (!empty($config_internal_client_id) && lookupUserPermission("module_client") >= 1 && hasClientAccess($config_internal_client_id)) {
+        $brand_link = "/agent/client_overview.php?client_id=" . intval($config_internal_client_id);
+    }
+
+    /*
+     * The company's mark: the logo from Admin > Settings > Company Details on a light
+     * tile, or the company's initials on the theme colour when there is none (or the
+     * file has gone missing). The tile grows sideways for a wide logo rather than
+     * shrinking it to a postage stamp. The name wraps to two lines, then ellipses -
+     * the full name is in the tooltip.
+     */
+    $brand_logo = basename((string) ($session_company_logo ?? ''));
+    if ($brand_logo === '' || !is_file(__DIR__ . "/../../uploads/settings/$brand_logo")) {
+        $brand_logo = '';
+    }
+    $brand_name = escapeHtml($session_company_name);
+    ?>
+
+    <div class="sidebar-brand itflow-brand">
+        <a class="brand-link itflow-brand-link" href="<?= $brand_link ?>" title="<?= $brand_name ?>">
+            <?php if ($brand_logo) { ?>
+                <span class="itflow-brand-mark itflow-brand-mark-logo">
+                    <img src="/uploads/settings/<?= escapeHtml(rawurlencode($brand_logo)) ?>" alt="" decoding="async">
+                </span>
+            <?php } else { ?>
+                <span class="itflow-brand-mark itflow-brand-mark-initials" aria-hidden="true"><?= escapeHtml(clientInitials('', $session_company_name)) ?></span>
+            <?php } ?>
+            <span class="itflow-brand-name"><?= $brand_name ?></span>
+        </a>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar-wrapper">
+
+        <!-- Sidebar Menu -->
+        <nav>
+            <ul class="nav nav-pills sidebar-menu flex-column mt-3" data-lte-toggle="treeview" data-accordion="false">
+                <li class="nav-item">
+                    <a href="/agent/dashboard.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "dashboard.php") { echo "active"; } ?>">
+                        <i class="nav-icon fas fa-tachometer-alt"></i>
+                        <p>Dashboard</p>
+                    </a>
+                </li>
+                <?php if (lookupUserPermission("module_client") >= 1) { ?>
+                    <li class="nav-item">
+                        <a href="/agent/clients.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "clients.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-users"></i>
+                            <p>
+                                Clients
+                                <?php if ($num_active_clients) { ?>
+                                    <span class="right badge text-light" data-bs-toggle="tooltip" title="Active Clients"><?= $num_active_clients ?></span>
+                                <?php } ?>
+                            </p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/agent/contacts.php" class="nav-link">
+                            <i class="fas fa-layer-group nav-icon"></i>
+                            <p>All Client Docs</p>
+                            <i class="fas fa-angle-right nav-icon float-end"></i>
+                        </a>
+                    </li>
+                <?php } ?>
+
+                <li class="nav-item">
+                    <a href="/agent/vendors.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "vendors.php" || basename($_SERVER["PHP_SELF"]) == "vendor.php") { echo "active"; } ?>">
+                        <i class="nav-icon fas fa-building"></i>
+                        <p>Vendors</p>
+                    </a>
+                </li>
+
+                <li class="nav-item">
+                    <a href="/agent/calendar.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "calendar.php") { echo "active"; } ?>">
+                        <i class="nav-icon fas fa-calendar-alt"></i>
+                        <p>Calendar</p>
+                    </a>
+                </li>
+
+                <?php if (lookupUserPermission("module_support") >= 1) { ?>
+                    <?php if ($config_module_enable_ticketing == 1) { ?>
+                        <li class="nav-header mt-3">SUPPORT</li>
+                        <li class="nav-item">
+                            <a href="/agent/tickets.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "tickets.php" || basename($_SERVER["PHP_SELF"]) == "ticket.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-life-ring"></i>
+                                <p>
+                                    Tickets
+                                    <?php if ($num_active_tickets) { ?>
+                                        <span class="right badge text-light" data-bs-toggle="tooltip" title="Open Tickets"><?= $num_active_tickets ?></span>
+                                    <?php } ?>
+                                </p>
+                            </a>
+                        </li>
+                        <?php if (smsProvider()) { ?>
+                            <li class="nav-item">
+                                <a href="/agent/texts.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "texts.php") { echo "active"; } ?>">
+                                    <i class="nav-icon fas fa-sms"></i>
+                                    <p>
+                                        Texts
+                                        <?php $nav_texts_waiting = smsInboxWaiting(); ?>
+                                        <?php if ($nav_texts_waiting) { ?>
+                                            <span class="right badge text-bg-warning" data-bs-toggle="tooltip" title="Texts waiting for someone - unmatched, and codes just in" data-nav-texts-waiting><?= $nav_texts_waiting ?></span>
+                                        <?php } ?>
+                                    </p>
+                                </a>
+                            </li>
+                        <?php } ?>
+                        <li class="nav-item">
+                            <a href="/agent/recurring_tickets.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "recurring_tickets.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-redo-alt"></i>
+                                <p>
+                                    Recurring Tickets
+                                    <?php if ($num_recurring_tickets) { ?>
+                                        <span class="right badge text-light" data-bs-toggle="tooltip" title="Active Recurring Tickets"><?= $num_recurring_tickets ?></span>
+                                    <?php } ?>
+                                </p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="/agent/projects.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "projects.php" || basename($_SERVER["PHP_SELF"]) == "project.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-project-diagram"></i>
+                                <p>
+                                    Projects
+                                    <?php if ($num_active_projects) { ?>
+                                        <span class="right badge text-light" data-bs-toggle="tooltip" title="Open Projects"><?= $num_active_projects ?></span>
+                                    <?php } ?>
+                                </p>
+                            </a>
+                        </li>
+                    <?php } ?>
+                <?php } ?>
+
+                <?php if ($config_module_enable_accounting == 1 && lookupUserPermission("module_sales") >= 1) { ?>
+                    <li class="nav-header mt-3">BILLING</li>
+                    <li class="nav-item">
+                        <a href="/agent/quotes.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "quotes.php" || basename($_SERVER["PHP_SELF"]) == "quote.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-comment-dollar"></i>
+                            <p>
+                                Quotes
+                                <?php if ($num_open_quotes) { ?>
+                                    <span class="right badge text-light" data-bs-toggle="tooltip" title="Active Quotes"><?= $num_open_quotes ?></span>
+                                <?php } ?>
+                            </p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/agent/invoices.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "invoices.php" || basename($_SERVER["PHP_SELF"]) == "invoice.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-file-invoice"></i>
+                            <p>
+                                Invoices
+                                <?php if ($num_open_invoices) { ?>
+                                    <span class="right badge text-light" data-bs-toggle="tooltip" title="Open Invoices"><?= $num_open_invoices ?></span>
+                                <?php } ?>
+                            </p>
+                        </a>
+                    </li>
+                    <?php if ($config_module_enable_ticketing == 1 || lookupUserPermission('module_financial') >= 1) { ?>
+                        <li class="nav-item">
+                            <a href="/agent/unbilled_time.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "unbilled_time.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-user-clock"></i>
+                                <p>
+                                    Unbilled Time
+                                    <?php if ($num_unbilled_tickets || $num_unbilled_expenses || $num_unbilled_trips) {
+                                        // "4 billable tickets done, 2 expenses and 1 trip to bill, not invoiced"
+                                        $unbilled_parts = array_values(array_filter([
+                                            "$num_unbilled_tickets billable ticket" . ($num_unbilled_tickets == 1 ? '' : 's') . ' done',
+                                            $num_unbilled_expenses ? "$num_unbilled_expenses expense" . ($num_unbilled_expenses == 1 ? '' : 's') : '',
+                                            $num_unbilled_trips ? "$num_unbilled_trips trip" . ($num_unbilled_trips == 1 ? '' : 's') : '',
+                                        ]));
+                                        $unbilled_last = count($unbilled_parts) > 1 ? array_pop($unbilled_parts) : '';
+                                        $unbilled_title = $unbilled_last === '' ? 'Billable tickets done, not invoiced' : implode(', ', $unbilled_parts) . " and $unbilled_last to bill, not invoiced"; ?>
+                                        <span class="right badge text-light" data-bs-toggle="tooltip" title="<?= escapeHtml($unbilled_title) ?>"><?= $num_unbilled_tickets + $num_unbilled_expenses + $num_unbilled_trips ?></span>
+                                    <?php } ?>
+                                </p>
+                            </a>
+                        </li>
+                    <?php } ?>
+                    <li class="nav-item">
+                        <a href="/agent/recurring_invoices.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "recurring_invoices.php" || basename($_SERVER["PHP_SELF"]) == "recurring_invoice.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-redo-alt"></i>
+                            <p>
+                                Recurring Invoices
+                                <?php if ($num_recurring_invoices) { ?>
+                                    <span class="right badge text-light" data-bs-toggle="tooltip" title="Active Recurring Invoices"><?= $num_recurring_invoices ?></span>
+                                <?php } ?>
+                            </p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/agent/contracts.php" class="nav-link <?php if (in_array(basename($_SERVER["PHP_SELF"]), ['contracts.php', 'contract.php', 'contract_document.php'], true)) { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-file-contract"></i>
+                            <p>
+                                Contracts
+                                <?php if (!empty($num_contracts_soon)) { ?>
+                                    <span class="right badge text-bg-warning" data-bs-toggle="tooltip" title="Ending or renewing soon"><?= intval($num_contracts_soon) ?></span>
+                                <?php } ?>
+                            </p>
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a href="/agent/products.php" class="nav-link <?php if (in_array(basename($_SERVER["PHP_SELF"]), ['products.php', 'product.php', 'products_count.php'], true)) { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-box-open"></i>
+                            <p>
+                                Products
+                                <?php if (!empty($num_products_reorder)) { ?>
+                                    <span class="right badge text-bg-warning" data-bs-toggle="tooltip" title="To reorder"><?= intval($num_products_reorder) ?></span>
+                                <?php } ?>
+                            </p>
+                        </a>
+                    </li>
+                <?php } ?>
+
+                <?php if ($config_module_enable_accounting == 1) { ?>
+                    <li class="nav-header mt-3">FINANCE</li>
+                    <?php if (lookupUserPermission("module_financial") >= 1) { ?>
+                        <li class="nav-item">
+                            <a href="/agent/income.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "income.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-hand-holding-usd"></i>
+                                <p>Income</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="/agent/expenses.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "expenses.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-shopping-cart"></i>
+                                <p>Expenses</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="/agent/recurring_expenses.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "recurring_expenses.php") { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-redo-alt"></i>
+                                <p>
+                                    Recurring Expenses
+                                    <?php if ($num_recurring_expenses) { ?>
+                                        <span class="right badge text-light" data-bs-toggle="tooltip" title="Recurring Expenses"><?= $num_recurring_expenses ?></span>
+                                    <?php } ?>
+                                </p>
+                            </a>
+                        </li>
+                    <?php } ?>
+                    <?php // Everyone logs their driving - without Financial access, their own trips ?>
+                    <li class="nav-item">
+                        <a href="/agent/trips.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "trips.php") { echo "active"; } ?>">
+                            <i class="nav-icon fas fa-route"></i>
+                            <p>Trips</p>
+                        </a>
+                    </li>
+                    <?php if (lookupUserPermission("module_financial") >= 1) { ?>
+                        <li class="nav-item">
+                            <a href="/agent/accounts.php" class="nav-link <?php if (in_array(basename($_SERVER["PHP_SELF"]), ["accounts.php", "reconcile.php"], true)) { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-piggy-bank"></i>
+                                <p>Accounts</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="/agent/transactions.php" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "transactions.php" && ($_GET['show'] ?? '') !== 'transfers') { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-list-alt"></i>
+                                <p>Transactions</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="/agent/transactions.php?show=transfers" class="nav-link <?php if (basename($_SERVER["PHP_SELF"]) == "transactions.php" && ($_GET['show'] ?? '') === 'transfers') { echo "active"; } ?>">
+                                <i class="nav-icon fas fa-exchange-alt"></i>
+                                <p>Transfers</p>
+                            </a>
+                        </li>
+                    <?php } ?>
+                <?php } ?>
+
+                <?php
+                // Your own links (Admin > Custom Links) go under Tools too - with its heading even when Reports isn't shown
+                $custom_links = customLinksFor(1);
+                if (lookupUserPermission("module_reporting") >= 1 || $custom_links) { ?>
+                    <li class="nav-header mt-3">TOOLS</li>
+                <?php } ?>
+                <?php if (lookupUserPermission("module_reporting") >= 1) { ?>
+                    <li class="nav-item">
+                        <a href="/agent/reports/" class="nav-link">
+                            <i class="fas fa-chart-line nav-icon"></i>
+                            <p>Reports</p>
+                            <i class="fas fa-angle-right nav-icon float-end"></i>
+                        </a>
+                    </li>
+                <?php } ?>
+                <?php foreach ($custom_links as $custom_link) {
+                    echo customLinkNavItemHtml($custom_link);
+                } ?>
+
+            </ul>
+        </nav>
+        <!-- /.sidebar-menu -->
+
+        <div class="mb-3"></div>
+
+    </div>
+    <!-- /.sidebar -->
+
+</aside>

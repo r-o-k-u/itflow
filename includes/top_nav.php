@@ -1,126 +1,83 @@
 <!-- Navbar -->
-<nav class="main-header navbar navbar-expand navbar-<?php echo nullable_htmlentities($config_theme); ?> navbar-dark">
+<nav class="app-header navbar navbar-expand d-print-none" data-bs-theme="dark">
 
     <!-- Left navbar links -->
     <ul class="navbar-nav">
         <li class="nav-item">
-            <a class="nav-link" data-widget="pushmenu" data-enable-remember="TRUE" href="#"><i class="fas fa-bars"></i></a>
+            <a class="nav-link" data-lte-toggle="sidebar" data-enable-remember="TRUE" href="#"><i class="fas fa-bars"></i></a>
         </li>
     </ul>
 
-    <!-- Center navbar links -->
-    <ul class="navbar-nav ml-auto">
-
-        <!-- SEARCH FORM -->
-        <form class="form-inline" action="global_search.php">
-            <div class="input-group input-group-sm">
-                <input class="form-control form-control-navbar" type="search" placeholder="Search everywhere" name="query"
-                    value="<?php if (isset($_GET['query'])) { echo nullable_htmlentities($_GET['query']); } ?>">
-                <div class="input-group-append">
-                    <button class="btn btn-navbar" type="submit">
-                        <i class="fas fa-search"></i>
-                    </button>
-                </div>
-            </div>
-        </form>
-    </ul>
+    <!-- SEARCH - js/global_search.js turns this box into the opener for the
+         search palette (also on Ctrl+K). Without the script it is still
+         a plain form posting to the full results page. -->
+    <form class="navbar-search ms-auto" role="search" action="/agent/global_search.php">
+        <label for="navbar-search-input" class="visually-hidden">Search everywhere</label>
+        <div class="navbar-search-field">
+            <input class="form-control" type="search" id="navbar-search-input" name="query"
+                placeholder="Search everywhere" autocomplete="off" aria-keyshortcuts="Control+K Meta+K"
+                value="<?php if (isset($_GET['query'])) { echo escapeHtml($_GET['query']); } ?>">
+            <button class="navbar-search-submit" type="submit" aria-label="Submit search">
+                <i class="fas fa-search" aria-hidden="true"></i>
+            </button>
+            <kbd class="navbar-search-kbd d-none d-lg-inline" aria-hidden="true">Ctrl K</kbd>
+        </div>
+    </form>
 
     <!-- Right navbar links -->
-    <ul class="navbar-nav ml-auto">
+    <ul class="navbar-nav ms-auto">
 
-        <?php if(CURRENT_DATABASE_VERSION > '1.4.5' ) { // Check DB Version REMOVE on Decemeber 1st 2024 -Johnny ?>
-
-            <!--Custom Nav Link -->
-            <?php
-            $sql_custom_links = mysqli_query($mysqli, "SELECT * FROM custom_links WHERE custom_link_location = 2 AND custom_link_archived_at IS NULL
-                ORDER BY custom_link_order ASC, custom_link_name ASC"
-            );
-
-            while ($row = mysqli_fetch_array($sql_custom_links)) {
-                $custom_link_name = nullable_htmlentities($row['custom_link_name']);
-                $custom_link_uri = nullable_htmlentities($row['custom_link_uri']);
-                $custom_link_icon = nullable_htmlentities($row['custom_link_icon']);
-                $custom_link_new_tab = intval($row['custom_link_new_tab']);
-                if ($custom_link_new_tab == 1) {
-                    $target = "target='_blank' rel='noopener noreferrer'";
-                } else {
-                    $target = "";
-                }
-
-                ?>
-
-            <li class="nav-item" title="<?php echo $custom_link_name; ?>">
-                <a href="<?php echo $custom_link_uri; ?>" <?php echo $target; ?> class="nav-link">
-                    <i class="fas fa-<?php echo $custom_link_icon; ?> nav-icon"></i>
+        <?php // Your own links (Admin > Custom Links) - an icon each, the name and what it is for on hover ?>
+        <?php foreach (customLinksFor(2) as $custom_link) {
+            $custom_link_title = $custom_link['custom_link_name'] . (trim((string) $custom_link['custom_link_description']) !== '' ? ' - ' . trim($custom_link['custom_link_description']) : ''); ?>
+            <li class="nav-item">
+                <a href="<?= escapeHtml($custom_link['href']) ?>" class="nav-link" title="<?= escapeHtml($custom_link_title) ?>" aria-label="<?= escapeHtml($custom_link['custom_link_name']) ?>"<?= intval($custom_link['custom_link_new_tab']) === 1 ? ' target="_blank" rel="noopener noreferrer"' : '' ?>>
+                    <i class="fas fa-<?= escapeHtml($custom_link['icon']) ?>" aria-hidden="true"></i>
                 </a>
             </li>
+        <?php } ?>
 
-            <?php } ?>
-            <!-- End Custom Nav Links -->
+        <!-- Notifications - js/notifications.js fills the panel when the bell is
+             opened and keeps the badge current. Without the script the bell is a
+             plain link to the full page. The panel follows the page theme, not
+             the always-dark navbar it sits in. -->
+        <?php $num_notifications = notificationUnreadCount(); ?>
 
-        <?php } // End DB Check ?>
-
-        <!-- New Notifications Dropdown -->
-        <?php
-        $row = mysqli_fetch_assoc(mysqli_query($mysqli, "SELECT COUNT('notification_id') AS num FROM notifications WHERE notification_user_id = $session_user_id AND notification_dismissed_at IS NULL"));
-        $num_notifications = $row['num'];
-
-        ?>
-
-        <li class="nav-item">
-            <a class="nav-link" href="#"
-                data-toggle="ajax-modal"
-                data-ajax-url="ajax/ajax_notifications.php"
-                >
-                <i class="fas fa-bell"></i>
-                <?php if ($num_notifications) { ?>
-                <span class="badge badge-light badge-pill navbar-badge position-absolute" style="top: 1px; right: 3px;">
-                    <?php echo $num_notifications; ?>
-                </span>
-                <?php } ?>
+        <li class="nav-item dropdown" id="itflowNotify" data-csrf="<?= $_SESSION['csrf_token'] ?>">
+            <a class="nav-link" href="/agent/notifications.php" role="button" data-bs-toggle="dropdown" data-bs-auto-close="outside"
+                aria-expanded="false" title="Notifications"
+                aria-label="Notifications<?= $num_notifications ? ", $num_notifications unread" : '' ?>">
+                <i class="fas fa-bell" aria-hidden="true"></i>
+                <span class="badge bg-light text-dark rounded-pill navbar-badge" data-notify-badge <?= $num_notifications ? '' : 'hidden' ?>><?= $num_notifications > 99 ? '99+' : $num_notifications ?></span>
             </a>
+            <div class="dropdown-menu dropdown-menu-end p-0 itflow-notify-panel" data-bs-theme="<?= $user_config_theme_dark ? 'dark' : 'light' ?>"></div>
         </li>
 
         <li class="nav-item dropdown user-menu">
-            <a href="#" class="nav-link" data-toggle="dropdown">
-                <?php if (empty($session_avatar)) { ?>
-                <i class="fas fa-user-circle mr-1"></i>
-                <?php }else{ ?>
-                <img src="<?php echo "uploads/users/$session_user_id/$session_avatar"; ?>"
-                    class="user-image img-circle">
-                <?php } ?>
-                <span
-                    class="d-none d-md-inline dropdown-toggle"><?php echo stripslashes(nullable_htmlentities($session_name)); ?></span>
+            <a href="#" class="nav-link" data-bs-toggle="dropdown">
+                <span class="me-md-2" data-bs-theme="light"><?= userAvatar($session_user_id, stripslashes($session_name), $session_avatar, 'sm') ?></span>
+                <span class="d-none d-md-inline dropdown-toggle"><?= stripslashes(escapeHtml($session_name)) ?></span>
             </a>
-            <ul class="dropdown-menu dropdown-menu-lg dropdown-menu-right">
+            <ul class="dropdown-menu dropdown-menu-lg dropdown-menu-end">
                 <!-- User image -->
-                <li class="user-header bg-gray-dark">
-                    <?php if (empty($session_avatar)) { ?>
-                    <i class="fas fa-user-circle fa-6x"></i>
-                    <?php }else{ ?>
-
-                    <img src="<?php echo "uploads/users/$session_user_id/$session_avatar"; ?>" class="img-circle">
-                    <?php } ?>
+                <li class="user-header bg-dark itflow-user-header">
+                    <span class="d-inline-block" data-bs-theme="light"><?= userAvatar($session_user_id, stripslashes($session_name), $session_avatar, 'xl') ?></span>
                     <p>
-                        <?php echo stripslashes(nullable_htmlentities($session_name)); ?>
-                        <small><?php echo nullable_htmlentities($session_user_role_display); ?></small>
+                        <?= stripslashes(escapeHtml($session_name)) ?>
+                        <small><?= escapeHtml($session_email) ?> · <?= escapeHtml(stripslashes($session_user_role_display)) ?></small>
                     </p>
                 </li>
                 <!-- Menu Footer-->
-                <li class="user-footer">
+                <li class="user-footer bg-light">
                     <?php if ($session_is_admin) { ?>
-                        <a href="admin_user.php" class="btn btn-default btn-block btn-flat mb-2"><i class="fas fa-user-shield mr-2"></i>Administration</a>
+                        <a href="/admin" class="btn btn-default w-100 btn-flat mb-2"><i class="fas fa-user-shield me-2"></i>Administration</a>
                     <?php } ?>
-                    <a href="user_details.php" class="btn btn-default btn-flat"><i class="fas fa-user-cog mr-2"></i>Account</a>
-                    <a href="post.php?logout" class="btn btn-default btn-flat float-right"><i class="fas fa-sign-out-alt mr-2"></i>Logout</a>
+                    <a href="/agent/user/user_details.php" class="btn btn-default btn-flat"><i class="fas fa-user-cog me-2"></i>Account</a>
+                    <a href="/agent/post.php?logout" class="btn btn-default btn-flat float-end"><i class="fas fa-sign-out-alt me-2"></i>Logout</a>
                 </li>
             </ul>
         </li>
 
     </ul>
 </nav>
-
-<?php if ($config_module_enable_ticketing == 1) {
-    include_once __DIR__ . "/../modals/top_nav_tickets_modal.php";
-    } ?>
 <!-- /.navbar -->

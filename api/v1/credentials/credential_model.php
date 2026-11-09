@@ -3,46 +3,77 @@
 
 // Variable assignment from POST (or: blank/from DB is updating)
 
+/*
+ * There is no form behind the API, so nothing has capped these before they arrive.
+ * An overlong value is a hard MySQL error, not a truncation, so it would surface as a
+ * generic "insert query failed" - say what actually went wrong instead.
+ * Only the fields present are checked, which keeps partial updates working.
+ */
+$credential_field_too_long = checkCredentialLengths([
+    'name'        => $_POST['credential_name'] ?? null,
+    'description' => $_POST['credential_description'] ?? null,
+    'uri'         => $_POST['credential_uri'] ?? null,
+    'uri_2'       => $_POST['credential_uri_2'] ?? null,
+    'username'    => $_POST['credential_username'] ?? null,
+    'password'    => $_POST['credential_password'] ?? null,
+    'otp_secret'  => $_POST['credential_otp_secret'] ?? null,
+]);
+
+if ($credential_field_too_long) {
+    $return_arr['success'] = "False";
+    $return_arr['message'] = "credential_$credential_field_too_long is too long to store.";
+    echo json_encode($return_arr);
+    exit();
+}
+
 $api_key_decrypt_password = '';
 if (isset($_POST['api_key_decrypt_password'])) {
     $api_key_decrypt_password = $_POST['api_key_decrypt_password']; // No sanitization
 }
 
+// A wrong decrypt password would save the username and password where nothing can read them back
+if ($api_key_decrypt_password !== '' && (isset($_POST['credential_username']) || isset($_POST['credential_password'])) && !apiDecryptPasswordOpens($api_key_decrypt_hash, $api_key_decrypt_password)) {
+    $return_arr['success'] = "False";
+    $return_arr['message'] = "api_key_decrypt_password is not the one set for this API key - nothing was saved.";
+    echo json_encode($return_arr);
+    exit();
+}
+
 if (isset($_POST['credential_name'])) {
-    $name = sanitizeInput($_POST['credential_name']);
+    $name = escapeSql($_POST['credential_name']);
 } elseif (isset($credential_row) && isset($credential_row['credential_name'])) {
-    $name = $credential_row['credential_name'];
+    $name = mysqli_real_escape_string($mysqli, $credential_row['credential_name']);
 } else {
     $name = '';
 }
 
 if (isset($_POST['credential_description'])) {
-    $description = sanitizeInput($_POST['credential_description']);
+    $description = escapeSql($_POST['credential_description']);
 } elseif (isset($credential_row) && isset($credential_row['credential_description'])) {
-    $description = $credential_row['credential_description'];
+    $description = mysqli_real_escape_string($mysqli, $credential_row['credential_description']);
 } else {
     $description = '';
 }
 
 if (isset($_POST['credential_uri'])) {
-    $uri = sanitizeInput($_POST['credential_uri']);
+    $uri = escapeSql($_POST['credential_uri']);
 } elseif (isset($credential_row) && isset($credential_row['credential_uri'])) {
-    $uri = $credential_row['credential_uri'];
+    $uri = mysqli_real_escape_string($mysqli, $credential_row['credential_uri']);
 } else {
     $uri = '';
 }
 
 if (isset($_POST['credential_uri_2'])) {
-    $uri_2 = sanitizeInput($_POST['credential_uri_2']);
+    $uri_2 = escapeSql($_POST['credential_uri_2']);
 } elseif (isset($credential_row) && isset($credential_row['credential_uri_2'])) {
-    $uri_2 = $credential_row['credential_uri_2'];
+    $uri_2 = mysqli_real_escape_string($mysqli, $credential_row['credential_uri_2']);
 } else {
     $uri_2 = '';
 }
 
 if (isset($_POST['credential_username'])) {
     $username = $_POST['credential_username'];
-    $username = apiEncryptLoginEntry($username, $api_key_decrypt_hash, $api_key_decrypt_password);
+    $username = apiEncryptCredentialEntry($username, $api_key_decrypt_hash, $api_key_decrypt_password);
 } elseif (isset($credential_row) && isset($credential_row['credential_username'])) {
     $username = $credential_row['credential_username'];
 } else {
@@ -51,7 +82,7 @@ if (isset($_POST['credential_username'])) {
 
 if (isset($_POST['credential_password'])) {
     $password = $_POST['credential_password'];
-    $password = apiEncryptLoginEntry($password, $api_key_decrypt_hash, $api_key_decrypt_password);
+    $password = apiEncryptCredentialEntry($password, $api_key_decrypt_hash, $api_key_decrypt_password);
     $password_changed = true;
 } elseif (isset($credential_row) && isset($credential_row['credential_password'])) {
     $password = $credential_row['credential_password'];
@@ -61,30 +92,30 @@ if (isset($_POST['credential_password'])) {
     $password_changed = false;
 }
 
-
-
 if (isset($_POST['credential_otp_secret'])) {
-    $otp_secret = sanitizeInput($_POST['credential_otp_secret']);
+    // Stored the way the agent side stores it - spaces and dashes out, an otpauth:// link down to its secret
+    $otp_seed = credentialOtpSeed($_POST['credential_otp_secret']);
+    $otp_secret = escapeSql($otp_seed === false ? trim((string) $_POST['credential_otp_secret']) : $otp_seed);
 } elseif (isset($credential_row) && isset($credential_row['credential_otp_secret'])) {
-    $otp_secret = $credential_row['credential_otp_secret'];
+    $otp_secret = mysqli_real_escape_string($mysqli, $credential_row['credential_otp_secret']);
 } else {
     $otp_secret = '';
 }
 
 if (isset($_POST['credential_note'])) {
-    $note = sanitizeInput($_POST['credential_note']);
+    $note = escapeSql($_POST['credential_note']);
 } elseif (isset($credential_row) && isset($credential_row['credential_note'])) {
-    $note = $credential_row['credential_note'];
+    $note = mysqli_real_escape_string($mysqli, $credential_row['credential_note']);
 } else {
     $note = '';
 }
 
-if (isset($_POST['credential_important'])) {
-    $important = intval($_POST['credential_important']);
-} elseif (isset($credential_row) && isset($credential_row['credential_important'])) {
-    $important = $credential_row['credential_important'];
+if (isset($_POST['credential_favorite'])) {
+    $favorite = intval($_POST['credential_favorite']);
+} elseif (isset($credential_row) && isset($credential_row['credential_favorite'])) {
+    $favorite = $credential_row['credential_favorite'];
 } else {
-    $important = '';
+    $favorite = 0;
 }
 
 if (isset($_POST['credential_contact_id'])) {
@@ -92,7 +123,7 @@ if (isset($_POST['credential_contact_id'])) {
 } elseif (isset($credential_row) && isset($credential_row['credential_contact_id'])) {
     $contact_id = $credential_row['credential_contact_id'];
 } else {
-    $contact_id = '';
+    $contact_id = 0;
 }
 
 if (isset($_POST['credential_vendor_id'])) {
@@ -100,7 +131,7 @@ if (isset($_POST['credential_vendor_id'])) {
 } elseif (isset($credential_row) && isset($credential_row['credential_vendor_id'])) {
     $vendor_id = $credential_row['credential_vendor_id'];
 } else {
-    $vendor_id = '';
+    $vendor_id = 0;
 }
 
 if (isset($_POST['credential_asset_id'])) {
@@ -108,7 +139,7 @@ if (isset($_POST['credential_asset_id'])) {
 } elseif (isset($credential_row) && isset($credential_row['credential_asset_id'])) {
     $asset_id = $credential_row['credential_asset_id'];
 } else {
-    $asset_id = '';
+    $asset_id = 0;
 }
 
 if (isset($_POST['credential_software_id'])) {
@@ -116,5 +147,16 @@ if (isset($_POST['credential_software_id'])) {
 } elseif (isset($credential_row) && isset($credential_row['credential_software_id'])) {
     $software_id = $credential_row['credential_software_id'];
 } else {
-    $software_id = '';
+    $software_id = 0;
+}
+
+// The contact, asset, vendor and license have to be the credential's client's, as on the
+// form - another client's is dropped. The vendor and license are links (vendor_credentials,
+// software_credentials) that create.php and update.php add.
+$contact_id = assetClientOwnedId('contact', $contact_id, $client_id);
+$asset_id = assetClientOwnedId('asset', $asset_id, $client_id);
+$vendor_id = assetClientOwnedId('vendor', $vendor_id, $client_id);
+$software_id = intval($software_id);
+if ($software_id && !mysqli_num_rows(mysqli_query($mysqli, "SELECT 1 FROM software WHERE software_id = $software_id AND software_client_id = " . intval($client_id) . " LIMIT 1"))) {
+    $software_id = 0;
 }

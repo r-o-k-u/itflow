@@ -1,0 +1,71 @@
+<?php
+
+require_once '../../../includes/modal_header.php';
+
+enforceUserPermission('module_support', 2);
+
+// The ticket, after the module and client checks - or the modal's error
+$row = ticketForModal($_GET['ticket_id'] ?? 0, 2, true);
+$ticket_id = intval($row['ticket_id']);
+
+ob_start();
+
+?>
+
+<div class="modal-header bg-dark">
+    <h5 class="modal-title"><i class="fa fa-fw fa-eye me-2"></i>Add watcher</h5>
+    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+</div>
+<form action="post.php" method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
+    <input type="hidden" name="ticket_id" value="<?= $ticket_id ?>">
+    <div class="modal-body">
+
+        <p class="text-muted small">Watchers get a copy of every emailed reply on this ticket.</p>
+
+        <div class="mb-3">
+            <label>Email</label>
+            <div class="input-group">
+                    <span class="input-group-text"><i class="fa fa-fw fa-envelope"></i></span>
+                <select class="form-select select2" data-tags="true" name="watcher_email">
+                    <option value="">- Pick a contact or type an email address -</option>
+                    <?php
+
+                    $sql_client_contacts_select = mysqli_query($mysqli, "SELECT contact_id, contact_name, contact_client_id, contact_photo, contact_title, contact_email FROM contacts WHERE contact_client_id = $client_id AND contact_email <> '' ORDER BY contact_name ASC");
+                    while ($row = mysqli_fetch_assoc($sql_client_contacts_select)) {
+                        $contact_id_select = intval($row['contact_id']);
+                        $contact_name_select = escapeHtml($row['contact_name']);
+                        $contact_email_select = escapeHtml($row['contact_email']);
+                        ?>
+                        <option value="<?= $contact_email_select ?>"<?= selectOptionContact($row['contact_client_id'] ?? 0, $row['contact_name'], $row['contact_photo'] ?? '', $row['contact_title'] ?? '', $row['contact_id'] ?? 0) ?>><?= "$contact_name_select - $contact_email_select" ?></option>
+
+                        <?php
+                    }
+                    ?>
+                </select>
+            </div>
+        </div>
+
+        <?php if (!empty($config_smtp_provider)) { ?>
+            <div class="mb-3">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="watcher_notify" value="1" id="checkNotifyWatcher">
+                    <label class="form-check-label" for="checkNotifyWatcher">
+                        Email them a link to this ticket now
+                    </label>
+                </div>
+            </div>
+        <?php } ?>
+
+    </div>
+
+    <div class="modal-footer">
+        <button type="submit" name="add_ticket_watcher" class="btn btn-primary text-bold"><i class="fa fa-check me-2"></i>Add watcher</button>
+        <button type="button" class="btn btn-light" data-bs-dismiss="modal"><i class="fa fa-times me-2"></i>Cancel</button>
+    </div>
+
+</form>
+
+<?php
+
+require_once '../../../includes/modal_footer.php';

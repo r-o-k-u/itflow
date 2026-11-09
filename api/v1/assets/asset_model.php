@@ -2,120 +2,128 @@
 
 // Variable assignment from POST (or: blank/from DB is updating)
 if (isset($_POST['asset_name'])) {
-    $name = sanitizeInput($_POST['asset_name']);
+    $name = escapeSql($_POST['asset_name']);
 } elseif (isset($asset_row) && isset($asset_row['asset_name'])) {
-    $name = $asset_row['asset_name'];
+    $name = mysqli_real_escape_string($mysqli, $asset_row['asset_name']);
 } else {
     $name = '';
 }
 
 if (isset($_POST['asset_description'])) {
-    $description = sanitizeInput($_POST['asset_description']);
+    $description = escapeSql($_POST['asset_description']);
 } elseif (isset($asset_row) && isset($asset_row['asset_description'])) {
-    $description = $asset_row['asset_description'];
+    $description = mysqli_real_escape_string($mysqli, $asset_row['asset_description']);
 } else {
     $description = '';
 }
 
 if (isset($_POST['asset_type'])) {
-    $type = sanitizeInput($_POST['asset_type']);
+    $type = escapeSql(assetTypeName($_POST['asset_type']) ?: $_POST['asset_type']); // as the list spells it, when it is one (functions/asset_type.php)
 } elseif (isset($asset_row) && isset($asset_row['asset_type'])) {
-    $type = $asset_row['asset_type'];
+    $type = mysqli_real_escape_string($mysqli, $asset_row['asset_type']);
 } else {
     $type = '';
 }
 
 if (isset($_POST['asset_make'])) {
-    $make = sanitizeInput($_POST['asset_make']);
+    $make = escapeSql($_POST['asset_make']);
 } elseif (isset($asset_row) && isset($asset_row['asset_make'])) {
-    $make = $asset_row['asset_make'];
+    $make = mysqli_real_escape_string($mysqli, $asset_row['asset_make']);
 } else {
     $make = '';
 }
 if (isset($_POST['asset_model'])) {
-    $model = sanitizeInput($_POST['asset_model']);
+    $model = escapeSql($_POST['asset_model']);
 } elseif (isset($asset_row) && isset($asset_row['asset_model'])) {
-    $model = $asset_row['asset_model'];
+    $model = mysqli_real_escape_string($mysqli, $asset_row['asset_model']);
 } else {
     $model = '';
 }
 
 if (isset($_POST['asset_serial'])) {
-    $serial = sanitizeInput($_POST['asset_serial']);
+    $serial = escapeSql($_POST['asset_serial']);
 } elseif (isset($asset_row) && isset($asset_row['asset_serial'])) {
-    $serial = $asset_row['asset_serial'];
+    $serial = mysqli_real_escape_string($mysqli, $asset_row['asset_serial']);
 } else {
     $serial = '';
 }
 
 if (isset($_POST['asset_os'])) {
-    $os = sanitizeInput($_POST['asset_os']);
+    $os = escapeSql($_POST['asset_os']);
 } elseif (isset($asset_row) && isset($asset_row['asset_os'])) {
-    $os = $asset_row['asset_os'];
+    $os = mysqli_real_escape_string($mysqli, $asset_row['asset_os']);
 } else {
     $os = '';
 }
 
 if (isset($_POST['asset_ip'])) {
-    $ip = sanitizeInput($_POST['asset_ip']);
+    $ip = escapeSql($_POST['asset_ip']);
 } elseif (isset($asset_row) && isset($asset_row['interface_ip'])) {
-    $ip = $asset_row['interface_ip'];
+    $ip = mysqli_real_escape_string($mysqli, $asset_row['interface_ip']);
 } else {
     $ip = '';
 }
 
 if (isset($_POST['asset_mac'])) {
-    $mac = sanitizeInput($_POST['asset_mac']);
+    $mac = escapeSql($_POST['asset_mac']);
 } elseif (isset($asset_row) && isset($asset_row['interface_mac'])) {
-    $mac = $asset_row['interface_mac'];
+    $mac = mysqli_real_escape_string($mysqli, $asset_row['interface_mac']);
 } else {
     $mac = '';
 }
 
 if (isset($_POST['asset_uri'])) {
-    $uri = sanitizeInput($_POST['asset_uri']);
+    $uri = escapeSql($_POST['asset_uri']);
 } elseif (isset($asset_row) && isset($asset_row['asset_uri'])) {
-    $uri = $asset_row['asset_uri'];
+    $uri = mysqli_real_escape_string($mysqli, $asset_row['asset_uri']);
 } else {
     $uri = '';
 }
 
+if (isset($_POST['asset_uri_2'])) {
+    $uri_2 = escapeSql($_POST['asset_uri_2']);
+} elseif (isset($asset_row) && isset($asset_row['asset_uri_2'])) {
+    $uri_2 = mysqli_real_escape_string($mysqli, $asset_row['asset_uri_2']);
+} else {
+    $uri_2 = '';
+}
+
 if (isset($_POST['asset_status'])) {
-    $status = sanitizeInput($_POST['asset_status']);
+    $status = escapeSql($_POST['asset_status']);
 } elseif (isset($asset_row) && isset($asset_row['asset_status'])) {
-    $status = $asset_row['asset_status'];
+    $status = mysqli_real_escape_string($mysqli, $asset_row['asset_status']);
 } else {
     $status = '';
 }
 
 if (isset($_POST['asset_purchase_date']) && !empty($_POST['asset_purchase_date'])) {
-    $purchase_date = "'" . sanitizeInput($_POST['asset_purchase_date']) . "'";
+    $purchase_date = "'" . escapeSql($_POST['asset_purchase_date']) . "'";
 } elseif (isset($asset_row) && isset($asset_row['asset_purchase_date'])) {
-    $purchase_date = "'" . $asset_row['asset_purchase_date'] . "'";
+    $purchase_date = "'" . mysqli_real_escape_string($mysqli, $asset_row['asset_purchase_date']) . "'";
 } else {
     $purchase_date = "NULL";
 }
 
 if (isset($_POST['asset_warranty_expire']) && !empty($_POST['asset_warranty_expire'])) {
-    $warranty_expire = "'" . sanitizeInput($_POST['asset_warranty_expire']) . "'";
+    $warranty_expire = "'" . escapeSql($_POST['asset_warranty_expire']) . "'";
 } elseif (isset($asset_row) && isset($asset_row['asset_warranty_expire'])) {
-    $warranty_expire = "'" . $asset_row['asset_warranty_expire'] . "'";
+    $warranty_expire = "'" . mysqli_real_escape_string($mysqli, $asset_row['asset_warranty_expire']) . "'";
 } else {
     $warranty_expire = "NULL";
 }
 
 if (isset($_POST['asset_install_date']) && !empty($_POST['asset_install_date'])) {
-    $install_date = "'" . sanitizeInput($_POST['asset_install_date']) . "'";
+    $install_date = "'" . escapeSql($_POST['asset_install_date']) . "'";
 } elseif (isset($asset_row) && isset($asset_row['asset_install_date'])) {
-    $install_date = "'" . $asset_row['asset_install_date'] . "'";
+    $install_date = "'" . mysqli_real_escape_string($mysqli, $asset_row['asset_install_date']) . "'";
 } else {
     $install_date = "NULL";
 }
 
 if (isset($_POST['asset_notes'])) {
-    $notes = sanitizeInput($_POST['asset_notes']);
+    $notes = escapeSql($_POST['asset_notes']);
 } elseif (isset($asset_row) && isset($asset_row['asset_notes'])) {
-    $notes = $asset_row['asset_notes'];
+    $notes = mysqli_real_escape_string($mysqli, $asset_row['asset_notes']);
 } else {
     $notes = '';
 }
@@ -151,3 +159,9 @@ if (isset($_POST['asset_network_id'])) {
 } else {
     $network = '0';
 }
+
+// Only the client's own, as in the asset form - another client's would show on this one's asset, and the asset on theirs
+$vendor = assetClientOwnedId('vendor', $vendor, $client_id);
+$location = assetClientOwnedId('location', $location, $client_id);
+$contact = assetClientOwnedId('contact', $contact, $client_id);
+$network = assetClientOwnedId('network', $network, $client_id);

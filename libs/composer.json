@@ -1,0 +1,10 @@
+{
+    "require": {
+        "directorytree/imapengine": "^1.24"
+    },
+    "config": {
+        "platform": {
+            "php": "8.2.0"
+        }
+    }
+}
